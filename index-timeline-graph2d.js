@@ -44,4 +44,5 @@ exports.timeline = {
 // bundled external libraries
 exports.moment = require('./lib/module/moment');
 exports.Hammer = require('./lib/module/hammer');
+exports.bezier = require('./lib/module/bezier');
 exports.keycharm = require('keycharm');

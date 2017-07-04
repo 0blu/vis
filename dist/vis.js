@@ -5,7 +5,7 @@
  * A dynamic, browser-based visualization library.
  *
  * @version 4.20.1
- * @date    2017-07-02
+ * @date    2017-07-03
  *
  * @license
  * Copyright (C) 2011-2017 Almende B.V, http://almende.com
@@ -92,7 +92,7 @@ return /******/ (function(modules) { // webpackBootstrap
   util.extend(exports, __webpack_require__(117));
 
   // Network
-  util.extend(exports, __webpack_require__(159));
+  util.extend(exports, __webpack_require__(164));
 
 /***/ }),
 /* 1 */
@@ -17010,6 +17010,7 @@ return /******/ (function(modules) { // webpackBootstrap
   // bundled external libraries
   exports.moment = __webpack_require__(82);
   exports.Hammer = __webpack_require__(113);
+  exports.bezier = __webpack_require__(159);
   exports.keycharm = __webpack_require__(116);
 
 /***/ }),
@@ -27782,9 +27783,9 @@ return /******/ (function(modules) { // webpackBootstrap
       // http://en.wikibooks.org/wiki/Algorithm_Implementation/Strings/Levenshtein_distance#JavaScript
       /*
        Copyright (c) 2011 Andrei Mackenzie
-         Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-         The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-         THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+        Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+        The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+        THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
        */
 
     }, {
@@ -33128,6 +33129,1493 @@ return /******/ (function(modules) { // webpackBootstrap
 
   'use strict';
 
+  // first check if bezier-js is already loaded in the browser window, if so,
+  // use this instance. Else, load via commonjs.
+  module.exports = typeof window !== 'undefined' && window['bezier'] || __webpack_require__(160);
+
+/***/ }),
+/* 160 */
+/***/ (function(module, exports, __webpack_require__) {
+
+  module.exports = __webpack_require__(161);
+
+
+/***/ }),
+/* 161 */
+/***/ (function(module, exports, __webpack_require__) {
+
+  /**
+    A javascript Bezier curve library by Pomax.
+
+    Based on http://pomax.github.io/bezierinfo
+
+    This code is MIT licensed.
+  **/
+  (function() {
+    "use strict";
+
+    // math-inlining.
+    var abs = Math.abs,
+        min = Math.min,
+        max = Math.max,
+        acos = Math.acos,
+        sqrt = Math.sqrt,
+        pi = Math.PI,
+        // a zero coordinate, which is surprisingly useful
+        ZERO = {x:0,y:0,z:0};
+
+    // quite needed
+    var utils = __webpack_require__(162);
+
+    // not quite needed, but eventually this'll be useful...
+    var PolyBezier = __webpack_require__(163);
+
+    /**
+     * Bezier curve constructor. The constructor argument can be one of three things:
+     *
+     * 1. array/4 of {x:..., y:..., z:...}, z optional
+     * 2. numerical array/8 ordered x1,y1,x2,y2,x3,y3,x4,y4
+     * 3. numerical array/12 ordered x1,y1,z1,x2,y2,z2,x3,y3,z3,x4,y4,z4
+     *
+     */
+    var Bezier = function(coords) {
+      var args = (coords && coords.forEach) ? coords : [].slice.call(arguments);
+      var coordlen = false;
+      if(typeof args[0] === "object") {
+        coordlen = args.length;
+        var newargs = [];
+        args.forEach(function(point) {
+          ['x','y','z'].forEach(function(d) {
+            if(typeof point[d] !== "undefined") {
+              newargs.push(point[d]);
+            }
+          });
+        });
+        args = newargs;
+      }
+      var higher = false;
+      var len = args.length;
+      if (coordlen) {
+        if(coordlen>4) {
+          if (arguments.length !== 1) {
+            throw new Error("Only new Bezier(point[]) is accepted for 4th and higher order curves");
+          }
+          higher = true;
+        }
+      } else {
+        if(len!==6 && len!==8 && len!==9 && len!==12) {
+          if (arguments.length !== 1) {
+            throw new Error("Only new Bezier(point[]) is accepted for 4th and higher order curves");
+          }
+        }
+      }
+      var _3d = (!higher && (len === 9 || len === 12)) || (coords && coords[0] && typeof coords[0].z !== "undefined");
+      this._3d = _3d;
+      var points = [];
+      for(var idx=0, step=(_3d ? 3 : 2); idx<len; idx+=step) {
+        var point = {
+          x: args[idx],
+          y: args[idx+1]
+        };
+        if(_3d) { point.z = args[idx+2] };
+        points.push(point);
+      }
+      this.order = points.length - 1;
+      this.points = points;
+      var dims = ['x','y'];
+      if(_3d) dims.push('z');
+      this.dims = dims;
+      this.dimlen = dims.length;
+
+      (function(curve) {
+        var order = curve.order;
+        var points = curve.points;
+        var a = utils.align(points, {p1:points[0], p2:points[order]});
+        for(var i=0; i<a.length; i++) {
+          if(abs(a[i].y) > 0.0001) {
+            curve._linear = false;
+            return;
+          }
+        }
+        curve._linear = true;
+      }(this));
+
+      this._t1 = 0;
+      this._t2 = 1;
+      this.update();
+    };
+
+    Bezier.fromSVG = function(svgString) {
+      var list = svgString.match(/[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?/g).map(parseFloat);
+      var relative = /[cq]/.test(svgString);
+      if(!relative) return new Bezier(list);
+      list = list.map(function(v,i) {
+        return i < 2 ? v : v + list[i % 2];
+      });
+      return new Bezier(list);
+    };
+
+    function getABC(n,S,B,E,t) {
+      if(typeof t === "undefined") { t = 0.5; }
+      var u = utils.projectionratio(t,n),
+          um = 1-u,
+          C = {
+            x: u*S.x + um*E.x,
+            y: u*S.y + um*E.y
+          },
+          s = utils.abcratio(t,n),
+          A = {
+            x: B.x + (B.x-C.x)/s,
+            y: B.y + (B.y-C.y)/s
+          };
+      return { A:A, B:B, C:C };
+    }
+
+    Bezier.quadraticFromPoints = function(p1,p2,p3, t) {
+      if(typeof t === "undefined") { t = 0.5; }
+      // shortcuts, although they're really dumb
+      if(t===0) { return new Bezier(p2,p2,p3); }
+      if(t===1) { return new Bezier(p1,p2,p2); }
+      // real fitting.
+      var abc = getABC(2,p1,p2,p3,t);
+      return new Bezier(p1, abc.A, p3);
+    };
+
+    Bezier.cubicFromPoints = function(S,B,E, t,d1) {
+      if(typeof t === "undefined") { t = 0.5; }
+      var abc = getABC(3,S,B,E,t);
+      if(typeof d1 === "undefined") { d1 = utils.dist(B,abc.C); }
+      var d2 = d1 * (1-t)/t;
+
+      var selen = utils.dist(S,E),
+          lx = (E.x-S.x)/selen,
+          ly = (E.y-S.y)/selen,
+          bx1 = d1 * lx,
+          by1 = d1 * ly,
+          bx2 = d2 * lx,
+          by2 = d2 * ly;
+      // derivation of new hull coordinates
+      var e1  = { x: B.x - bx1, y: B.y - by1 },
+          e2  = { x: B.x + bx2, y: B.y + by2 },
+          A = abc.A,
+          v1  = { x: A.x + (e1.x-A.x)/(1-t), y: A.y + (e1.y-A.y)/(1-t) },
+          v2  = { x: A.x + (e2.x-A.x)/(t), y: A.y + (e2.y-A.y)/(t) },
+          nc1 = { x: S.x + (v1.x-S.x)/(t), y: S.y + (v1.y-S.y)/(t) },
+          nc2 = { x: E.x + (v2.x-E.x)/(1-t), y: E.y + (v2.y-E.y)/(1-t) };
+      // ...done
+      return new Bezier(S,nc1,nc2,E);
+    };
+
+    var getUtils = function() {
+      return utils;
+    };
+
+    Bezier.getUtils = getUtils;
+
+    Bezier.prototype = {
+      getUtils: getUtils,
+      valueOf: function() {
+        return this.toString();
+      },
+      toString: function() {
+        return utils.pointsToString(this.points);
+      },
+      toSVG: function(relative) {
+        if(this._3d) return false;
+        var p = this.points,
+            x = p[0].x,
+            y = p[0].y,
+            s = ["M", x, y, (this.order===2 ? "Q":"C")];
+        for(var i=1, last=p.length; i<last; i++) {
+          s.push(p[i].x);
+          s.push(p[i].y);
+        }
+        return s.join(" ");
+      },
+      update: function() {
+        // one-time compute derivative coordinates
+        this.dpoints = [];
+        for(var p=this.points, d=p.length, c=d-1; d>1; d--, c--) {
+          var list = [];
+          for(var j=0, dpt; j<c; j++) {
+            dpt = {
+              x: c * (p[j+1].x - p[j].x),
+              y: c * (p[j+1].y - p[j].y)
+            };
+            if(this._3d) {
+              dpt.z = c * (p[j+1].z - p[j].z);
+            }
+            list.push(dpt);
+          }
+          this.dpoints.push(list);
+          p = list;
+        };
+        this.computedirection();
+      },
+      computedirection: function() {
+        var points = this.points;
+        var angle = utils.angle(points[0], points[this.order], points[1]);
+        this.clockwise = angle > 0;
+      },
+      length: function() {
+        return utils.length(this.derivative.bind(this));
+      },
+      _lut: [],
+      getLUT: function(steps) {
+        steps = steps || 100;
+        if (this._lut.length === steps) { return this._lut; }
+        this._lut = [];
+        for(var t=0; t<=steps; t++) {
+          this._lut.push(this.compute(t/steps));
+        }
+        return this._lut;
+      },
+      on: function(point, error) {
+        error = error || 5;
+        var lut = this.getLUT(), hits = [], c, t=0;
+        for(var i=0; i<lut.length; i++) {
+          c = lut[i];
+          if (utils.dist(c,point) < error) {
+            hits.push(c)
+            t += i / lut.length;
+          }
+        }
+        if(!hits.length) return false;
+        return t /= hits.length;
+      },
+      project: function(point) {
+        // step 1: coarse check
+        var LUT = this.getLUT(), l = LUT.length-1,
+            closest = utils.closest(LUT, point),
+            mdist = closest.mdist,
+            mpos = closest.mpos;
+        if (mpos===0 || mpos===l) {
+          var t = mpos/l, pt = this.compute(t);
+          pt.t = t;
+          pt.d = mdist;
+          return pt;
+        }
+
+        // step 2: fine check
+        var ft, t, p, d,
+            t1 = (mpos-1)/l,
+            t2 = (mpos+1)/l,
+            step = 0.1/l;
+        mdist += 1;
+        for(t=t1,ft=t; t<t2+step; t+=step) {
+          p = this.compute(t);
+          d = utils.dist(point, p);
+          if (d<mdist) {
+            mdist = d;
+            ft = t;
+          }
+        }
+        p = this.compute(ft);
+        p.t = ft;
+        p.d = mdist;
+        return p;
+      },
+      get: function(t) {
+        return this.compute(t);
+      },
+      point: function(idx) {
+        return this.points[idx];
+      },
+      compute: function(t) {
+        // shortcuts
+        if(t===0) { return this.points[0]; }
+        if(t===1) { return this.points[this.order]; }
+
+        var p = this.points;
+        var mt = 1-t;
+
+        // linear?
+        if(this.order===1) {
+          ret = {
+            x: mt*p[0].x + t*p[1].x,
+            y: mt*p[0].y + t*p[1].y
+          };
+          if (this._3d) { ret.z = mt*p[0].z + t*p[1].z; }
+          return ret;
+        }
+
+        // quadratic/cubic curve?
+        if(this.order<4) {
+          var mt2 = mt*mt,
+              t2 = t*t,
+              a,b,c,d = 0;
+          if(this.order===2) {
+            p = [p[0], p[1], p[2], ZERO];
+            a = mt2;
+            b = mt*t*2;
+            c = t2;
+          }
+          else if(this.order===3) {
+            a = mt2*mt;
+            b = mt2*t*3;
+            c = mt*t2*3;
+            d = t*t2;
+          }
+          var ret = {
+            x: a*p[0].x + b*p[1].x + c*p[2].x + d*p[3].x,
+            y: a*p[0].y + b*p[1].y + c*p[2].y + d*p[3].y
+          };
+          if(this._3d) {
+            ret.z = a*p[0].z + b*p[1].z + c*p[2].z + d*p[3].z;
+          }
+          return ret;
+        }
+
+        // higher order curves: use de Casteljau's computation
+        var dCpts = JSON.parse(JSON.stringify(this.points));
+        while(dCpts.length > 1) {
+          for (var i=0; i<dCpts.length-1; i++) {
+            dCpts[i] = {
+              x: dCpts[i].x + (dCpts[i+1].x - dCpts[i].x) * t,
+              y: dCpts[i].y + (dCpts[i+1].y - dCpts[i].y) * t
+            };
+            if (typeof dCpts[i].z !== "undefined") {
+              dCpts[i] = dCpts[i].z + (dCpts[i+1].z - dCpts[i].z) * t
+            }
+          }
+          dCpts.splice(dCpts.length-1, 1);
+        }
+        return dCpts[0];
+      },
+      raise: function() {
+        var p = this.points, np = [p[0]], i, k=p.length, pi, pim;
+        for (var i=1; i<k; i++) {
+          pi = p[i];
+          pim = p[i-1];
+          np[i] = {
+            x: (k-i)/k * pi.x + i/k * pim.x,
+            y: (k-i)/k * pi.y + i/k * pim.y
+          };
+        }
+        np[k] = p[k-1];
+        return new Bezier(np);
+      },
+      derivative: function(t) {
+        var mt = 1-t,
+            a,b,c=0,
+            p = this.dpoints[0];
+        if(this.order===2) { p = [p[0], p[1], ZERO]; a = mt; b = t; }
+        if(this.order===3) { a = mt*mt; b = mt*t*2; c = t*t; }
+        var ret = {
+          x: a*p[0].x + b*p[1].x + c*p[2].x,
+          y: a*p[0].y + b*p[1].y + c*p[2].y
+        };
+        if(this._3d) {
+          ret.z = a*p[0].z + b*p[1].z + c*p[2].z;
+        }
+        return ret;
+      },
+      inflections: function() {
+        return utils.inflections(this.points);
+      },
+      normal: function(t) {
+        return this._3d ? this.__normal3(t) : this.__normal2(t);
+      },
+      __normal2: function(t) {
+        var d = this.derivative(t);
+        var q = sqrt(d.x*d.x + d.y*d.y)
+        return { x: -d.y/q, y: d.x/q };
+      },
+      __normal3: function(t) {
+        // see http://stackoverflow.com/questions/25453159
+        var r1 = this.derivative(t),
+            r2 = this.derivative(t+0.01),
+            q1 = sqrt(r1.x*r1.x + r1.y*r1.y + r1.z*r1.z),
+            q2 = sqrt(r2.x*r2.x + r2.y*r2.y + r2.z*r2.z);
+        r1.x /= q1; r1.y /= q1; r1.z /= q1;
+        r2.x /= q2; r2.y /= q2; r2.z /= q2;
+        // cross product
+        var c = {
+          x: r2.y*r1.z - r2.z*r1.y,
+          y: r2.z*r1.x - r2.x*r1.z,
+          z: r2.x*r1.y - r2.y*r1.x
+        };
+        var m = sqrt(c.x*c.x + c.y*c.y + c.z*c.z);
+        c.x /= m; c.y /= m; c.z /= m;
+        // rotation matrix
+        var R = [   c.x*c.x,   c.x*c.y-c.z, c.x*c.z+c.y,
+                  c.x*c.y+c.z,   c.y*c.y,   c.y*c.z-c.x,
+                  c.x*c.z-c.y, c.y*c.z+c.x,   c.z*c.z    ];
+        // normal vector:
+        var n = {
+          x: R[0] * r1.x + R[1] * r1.y + R[2] * r1.z,
+          y: R[3] * r1.x + R[4] * r1.y + R[5] * r1.z,
+          z: R[6] * r1.x + R[7] * r1.y + R[8] * r1.z
+        };
+        return n;
+      },
+      hull: function(t) {
+        var p = this.points,
+            _p = [],
+            pt,
+            q = [],
+            idx = 0,
+            i=0,
+            l=0;
+        q[idx++] = p[0];
+        q[idx++] = p[1];
+        q[idx++] = p[2];
+        if(this.order === 3) { q[idx++] = p[3]; }
+        // we lerp between all points at each iteration, until we have 1 point left.
+        while(p.length>1) {
+          _p = [];
+          for(i=0, l=p.length-1; i<l; i++) {
+            pt = utils.lerp(t,p[i],p[i+1]);
+            q[idx++] = pt;
+            _p.push(pt);
+          }
+          p = _p;
+        }
+        return q;
+      },
+      split: function(t1, t2) {
+        // shortcuts
+        if(t1===0 && !!t2) { return this.split(t2).left; }
+        if(t2===1) { return this.split(t1).right; }
+
+        // no shortcut: use "de Casteljau" iteration.
+        var q = this.hull(t1);
+        var result = {
+          left: this.order === 2 ? new Bezier([q[0],q[3],q[5]]) : new Bezier([q[0],q[4],q[7],q[9]]),
+          right: this.order === 2 ? new Bezier([q[5],q[4],q[2]]) : new Bezier([q[9],q[8],q[6],q[3]]),
+          span: q
+        };
+
+        // make sure we bind _t1/_t2 information!
+        result.left._t1  = utils.map(0,  0,1, this._t1,this._t2);
+        result.left._t2  = utils.map(t1, 0,1, this._t1,this._t2);
+        result.right._t1 = utils.map(t1, 0,1, this._t1,this._t2);
+        result.right._t2 = utils.map(1,  0,1, this._t1,this._t2);
+
+        // if we have no t2, we're done
+        if(!t2) { return result; }
+
+        // if we have a t2, split again:
+        t2 = utils.map(t2,t1,1,0,1);
+        var subsplit = result.right.split(t2);
+        return subsplit.left;
+      },
+      extrema: function() {
+        var dims = this.dims,
+            result={},
+            roots=[],
+            p, mfn;
+        dims.forEach(function(dim) {
+          mfn = function(v) { return v[dim]; };
+          p = this.dpoints[0].map(mfn);
+          result[dim] = utils.droots(p);
+          if(this.order === 3) {
+            p = this.dpoints[1].map(mfn);
+            result[dim] = result[dim].concat(utils.droots(p));
+          }
+          result[dim] = result[dim].filter(function(t) { return (t>=0 && t<=1); });
+          roots = roots.concat(result[dim].sort());
+        }.bind(this));
+        roots = roots.sort().filter(function(v,idx) { return (roots.indexOf(v) === idx); });
+        result.values = roots;
+        return result;
+      },
+      bbox: function() {
+        var extrema = this.extrema(), result = {};
+        this.dims.forEach(function(d) {
+          result[d] = utils.getminmax(this, d, extrema[d]);
+        }.bind(this));
+        return result;
+      },
+      overlaps: function(curve) {
+        var lbbox = this.bbox(),
+            tbbox = curve.bbox();
+        return utils.bboxoverlap(lbbox,tbbox);
+      },
+      offset: function(t, d) {
+        if(typeof d !== "undefined") {
+          var c = this.get(t);
+          var n = this.normal(t);
+          var ret = {
+            c: c,
+            n: n,
+            x: c.x + n.x * d,
+            y: c.y + n.y * d
+          };
+          if(this._3d) {
+            ret.z = c.z + n.z * d;
+          };
+          return ret;
+        }
+        if(this._linear) {
+          var nv = this.normal(0);
+          var coords = this.points.map(function(p) {
+            var ret = {
+              x: p.x + t * nv.x,
+              y: p.y + t * nv.y
+            };
+            if(p.z && n.z) { ret.z = p.z + t * nv.z; }
+            return ret;
+          });
+          return [new Bezier(coords)];
+        }
+        var reduced = this.reduce();
+        return reduced.map(function(s) {
+          return s.scale(t);
+        });
+      },
+      simple: function() {
+        if(this.order===3) {
+          var a1 = utils.angle(this.points[0], this.points[3], this.points[1]);
+          var a2 = utils.angle(this.points[0], this.points[3], this.points[2]);
+          if(a1>0 && a2<0 || a1<0 && a2>0) return false;
+        }
+        var n1 = this.normal(0);
+        var n2 = this.normal(1);
+        var s = n1.x*n2.x + n1.y*n2.y;
+        if(this._3d) { s += n1.z*n2.z; }
+        var angle = abs(acos(s));
+        return angle < pi/3;
+      },
+      reduce: function() {
+        var i, t1=0, t2=0, step=0.01, segment, pass1=[], pass2=[];
+        // first pass: split on extrema
+        var extrema = this.extrema().values;
+        if(extrema.indexOf(0)===-1) { extrema = [0].concat(extrema); }
+        if(extrema.indexOf(1)===-1) { extrema.push(1); }
+
+        for(t1=extrema[0], i=1; i<extrema.length; i++) {
+          t2 = extrema[i];
+          segment = this.split(t1,t2);
+          segment._t1 = t1;
+          segment._t2 = t2;
+          pass1.push(segment);
+          t1 = t2;
+        }
+
+        // second pass: further reduce these segments to simple segments
+        pass1.forEach(function(p1) {
+          t1=0;
+          t2=0;
+          while(t2 <= 1) {
+            for(t2=t1+step; t2<=1+step; t2+=step) {
+              segment = p1.split(t1,t2);
+              if(!segment.simple()) {
+                t2 -= step;
+                if(abs(t1-t2)<step) {
+                  // we can never form a reduction
+                  return [];
+                }
+                segment = p1.split(t1,t2);
+                segment._t1 = utils.map(t1,0,1,p1._t1,p1._t2);
+                segment._t2 = utils.map(t2,0,1,p1._t1,p1._t2);
+                pass2.push(segment);
+                t1 = t2;
+                break;
+              }
+            }
+          }
+          if(t1<1) {
+            segment = p1.split(t1,1);
+            segment._t1 = utils.map(t1,0,1,p1._t1,p1._t2);
+            segment._t2 = p1._t2;
+            pass2.push(segment);
+          }
+        });
+        return pass2;
+      },
+      scale: function(d) {
+        var order = this.order;
+        var distanceFn = false
+        if(typeof d === "function") { distanceFn = d; }
+        if(distanceFn && order === 2) { return this.raise().scale(distanceFn); }
+
+        // TODO: add special handling for degenerate (=linear) curves.
+        var clockwise = this.clockwise;
+        var r1 = distanceFn ? distanceFn(0) : d;
+        var r2 = distanceFn ? distanceFn(1) : d;
+        var v = [ this.offset(0,10), this.offset(1,10) ];
+        var o = utils.lli4(v[0], v[0].c, v[1], v[1].c);
+        if(!o) { throw new Error("cannot scale this curve. Try reducing it first."); }
+        // move all points by distance 'd' wrt the origin 'o'
+        var points=this.points, np=[];
+
+        // move end points by fixed distance along normal.
+        [0,1].forEach(function(t) {
+          var p = np[t*order] = utils.copy(points[t*order]);
+          p.x += (t?r2:r1) * v[t].n.x;
+          p.y += (t?r2:r1) * v[t].n.y;
+        }.bind(this));
+
+        if (!distanceFn) {
+          // move control points to lie on the intersection of the offset
+          // derivative vector, and the origin-through-control vector
+          [0,1].forEach(function(t) {
+            if(this.order===2 && !!t) return;
+            var p = np[t*order];
+            var d = this.derivative(t);
+            var p2 = { x: p.x + d.x, y: p.y + d.y };
+            np[t+1] = utils.lli4(p, p2, o, points[t+1]);
+          }.bind(this));
+          return new Bezier(np);
+        }
+
+        // move control points by "however much necessary to
+        // ensure the correct tangent to endpoint".
+        [0,1].forEach(function(t) {
+          if(this.order===2 && !!t) return;
+          var p = points[t+1];
+          var ov = {
+            x: p.x - o.x,
+            y: p.y - o.y
+          };
+          var rc = distanceFn ? distanceFn((t+1)/order) : d;
+          if(distanceFn && !clockwise) rc = -rc;
+          var m = sqrt(ov.x*ov.x + ov.y*ov.y);
+          ov.x /= m;
+          ov.y /= m;
+          np[t+1] = {
+            x: p.x + rc*ov.x,
+            y: p.y + rc*ov.y
+          }
+        }.bind(this));
+        return new Bezier(np);
+      },
+      outline: function(d1, d2, d3, d4) {
+        d2 = (typeof d2 === "undefined") ? d1 : d2;
+        var reduced = this.reduce(),
+            len = reduced.length,
+            fcurves = [],
+            bcurves = [],
+            p,
+            alen = 0,
+            tlen = this.length();
+
+        var graduated = (typeof d3 !== "undefined" && typeof d4 !== "undefined");
+
+        function linearDistanceFunction(s,e, tlen,alen,slen) {
+          return function (v) {
+            var f1 = alen/tlen, f2 = (alen+slen)/tlen, d = e-s;
+            return utils.map(v, 0,1, s+f1*d, s+f2*d);
+          };
+        };
+
+        // form curve oulines
+        reduced.forEach(function(segment) {
+          slen = segment.length();
+          if (graduated) {
+            fcurves.push(segment.scale(  linearDistanceFunction( d1, d3, tlen,alen,slen)  ));
+            bcurves.push(segment.scale(  linearDistanceFunction(-d2,-d4, tlen,alen,slen)  ));
+          } else {
+            fcurves.push(segment.scale( d1));
+            bcurves.push(segment.scale(-d2));
+          }
+          alen += slen;
+        });
+
+        // reverse the "return" outline
+        bcurves = bcurves.map(function(s) {
+          p = s.points;
+          if(p[3]) { s.points = [p[3],p[2],p[1],p[0]]; }
+          else { s.points = [p[2],p[1],p[0]]; }
+          return s;
+        }).reverse();
+
+        // form the endcaps as lines
+        var fs = fcurves[0].points[0],
+            fe = fcurves[len-1].points[fcurves[len-1].points.length-1],
+            bs = bcurves[len-1].points[bcurves[len-1].points.length-1],
+            be = bcurves[0].points[0],
+            ls = utils.makeline(bs,fs),
+            le = utils.makeline(fe,be),
+            segments = [ls].concat(fcurves).concat([le]).concat(bcurves),
+            slen = segments.length;
+
+        return new PolyBezier(segments);
+      },
+      outlineshapes: function(d1, d2, curveIntersectionThreshold) {
+        d2 = d2 || d1;
+        var outline = this.outline(d1,d2).curves;
+        var shapes = [];
+        for(var i=1, len=outline.length; i < len/2; i++) {
+          var shape = utils.makeshape(outline[i], outline[len-i], curveIntersectionThreshold);
+          shape.startcap.virtual = (i > 1);
+          shape.endcap.virtual = (i < len/2-1);
+          shapes.push(shape);
+        }
+        return shapes;
+      },
+      intersects: function(curve, curveIntersectionThreshold) {
+        if(!curve) return this.selfintersects(curveIntersectionThreshold);
+        if(curve.p1 && curve.p2) {
+          return this.lineIntersects(curve);
+        }
+        if(curve instanceof Bezier) { curve = curve.reduce(); }
+        return this.curveintersects(this.reduce(), curve, curveIntersectionThreshold);
+      },
+      lineIntersects: function(line) {
+        var mx = min(line.p1.x, line.p2.x),
+            my = min(line.p1.y, line.p2.y),
+            MX = max(line.p1.x, line.p2.x),
+            MY = max(line.p1.y, line.p2.y),
+            self=this;
+        return utils.roots(this.points, line).filter(function(t) {
+          var p = self.get(t);
+          return utils.between(p.x, mx, MX) && utils.between(p.y, my, MY);
+        });
+      },
+      selfintersects: function(curveIntersectionThreshold) {
+        var reduced = this.reduce();
+        // "simple" curves cannot intersect with their direct
+        // neighbour, so for each segment X we check whether
+        // it intersects [0:x-2][x+2:last].
+        var i,len=reduced.length-2,results=[],result,left,right;
+        for(i=0; i<len; i++) {
+          left = reduced.slice(i,i+1);
+          right = reduced.slice(i+2);
+          result = this.curveintersects(left, right, curveIntersectionThreshold);
+          results = results.concat( result );
+        }
+        return results;
+      },
+      curveintersects: function(c1, c2, curveIntersectionThreshold) {
+        var pairs = [];
+        // step 1: pair off any overlapping segments
+        c1.forEach(function(l) {
+          c2.forEach(function(r) {
+            if(l.overlaps(r)) {
+              pairs.push({ left: l, right: r });
+            }
+          });
+        });
+        // step 2: for each pairing, run through the convergence algorithm.
+        var intersections = [];
+        pairs.forEach(function(pair) {
+          var result = utils.pairiteration(pair.left, pair.right, curveIntersectionThreshold);
+          if(result.length > 0) {
+            intersections = intersections.concat(result);
+          }
+        });
+        return intersections;
+      },
+      arcs: function(errorThreshold) {
+        errorThreshold = errorThreshold || 0.5;
+        var circles = [];
+        return this._iterate(errorThreshold, circles);
+      },
+      _error: function(pc, np1, s, e) {
+        var q = (e - s) / 4,
+            c1 = this.get(s + q),
+            c2 = this.get(e - q),
+            ref = utils.dist(pc, np1),
+            d1  = utils.dist(pc, c1),
+            d2  = utils.dist(pc, c2);
+        return abs(d1-ref) + abs(d2-ref);
+      },
+      _iterate: function(errorThreshold, circles) {
+        var s = 0, e = 1, safety;
+        // we do a binary search to find the "good `t` closest to no-longer-good"
+        do {
+          safety=0;
+
+          // step 1: start with the maximum possible arc
+          e = 1;
+
+          // points:
+          var np1 = this.get(s), np2, np3, arc, prev_arc;
+
+          // booleans:
+          var curr_good = false, prev_good = false, done;
+
+          // numbers:
+          var m = e, prev_e = 1, step = 0;
+
+          // step 2: find the best possible arc
+          do {
+            prev_good = curr_good;
+            prev_arc = arc;
+            m = (s + e)/2;
+            step++;
+
+            np2 = this.get(m);
+            np3 = this.get(e);
+
+            arc = utils.getccenter(np1, np2, np3);
+
+            //also save the t values
+            arc.interval = {
+              start: s,
+              end: e
+            };
+
+            var error = this._error(arc, np1, s, e);
+            curr_good = (error <= errorThreshold);
+
+            done = prev_good && !curr_good;
+            if(!done) prev_e = e;
+
+            // this arc is fine: we can move 'e' up to see if we can find a wider arc
+            if(curr_good) {
+
+              // if e is already at max, then we're done for this arc.
+              if (e >= 1) {
+                arc.interval.end = prev_e = 1;
+                prev_arc = arc;
+                break;
+              }
+              // if not, move it up by half the iteration distance
+              e = e + (e-s)/2;
+            }
+
+            // this is a bad arc: we need to move 'e' down to find a good arc
+            else {
+              e = m;
+            }
+          }
+          while(!done && safety++<100);
+
+          if(safety>=100) {
+            break;
+          }
+
+          // console.log("L835: [F] arc found", s, prev_e, prev_arc.x, prev_arc.y, prev_arc.s, prev_arc.e);
+
+          prev_arc = (prev_arc ? prev_arc : arc);
+          circles.push(prev_arc);
+          s = prev_e;
+        }
+        while(e < 1);
+        return circles;
+      }
+    };
+
+    module.exports = Bezier;
+
+  }());
+
+
+/***/ }),
+/* 162 */
+/***/ (function(module, exports, __webpack_require__) {
+
+  (function() {
+    "use strict";
+
+    // math-inlining.
+    var abs = Math.abs,
+        cos = Math.cos,
+        sin = Math.sin,
+        acos = Math.acos,
+        atan2 = Math.atan2,
+        sqrt = Math.sqrt,
+        pow = Math.pow,
+        // cube root function yielding real roots
+        crt = function(v) { return (v<0) ? -pow(-v,1/3) : pow(v,1/3); },
+        // trig constants
+        pi = Math.PI,
+        tau = 2*pi,
+        quart = pi/2,
+        // float precision significant decimal
+        epsilon = 0.000001,
+        // extremas used in bbox calculation and similar algorithms
+        nMax = Number.MAX_SAFE_INTEGER,
+        nMin = Number.MIN_SAFE_INTEGER;
+
+    // Bezier utility functions
+    var utils = {
+      // Legendre-Gauss abscissae with n=24 (x_i values, defined at i=n as the roots of the nth order Legendre polynomial Pn(x))
+      Tvalues: [
+        -0.0640568928626056260850430826247450385909,
+         0.0640568928626056260850430826247450385909,
+        -0.1911188674736163091586398207570696318404,
+         0.1911188674736163091586398207570696318404,
+        -0.3150426796961633743867932913198102407864,
+         0.3150426796961633743867932913198102407864,
+        -0.4337935076260451384870842319133497124524,
+         0.4337935076260451384870842319133497124524,
+        -0.5454214713888395356583756172183723700107,
+         0.5454214713888395356583756172183723700107,
+        -0.6480936519369755692524957869107476266696,
+         0.6480936519369755692524957869107476266696,
+        -0.7401241915785543642438281030999784255232,
+         0.7401241915785543642438281030999784255232,
+        -0.8200019859739029219539498726697452080761,
+         0.8200019859739029219539498726697452080761,
+        -0.8864155270044010342131543419821967550873,
+         0.8864155270044010342131543419821967550873,
+        -0.9382745520027327585236490017087214496548,
+         0.9382745520027327585236490017087214496548,
+        -0.9747285559713094981983919930081690617411,
+         0.9747285559713094981983919930081690617411,
+        -0.9951872199970213601799974097007368118745,
+         0.9951872199970213601799974097007368118745
+      ],
+
+      // Legendre-Gauss weights with n=24 (w_i values, defined by a function linked to in the Bezier primer article)
+      Cvalues: [
+        0.1279381953467521569740561652246953718517,
+        0.1279381953467521569740561652246953718517,
+        0.1258374563468282961213753825111836887264,
+        0.1258374563468282961213753825111836887264,
+        0.1216704729278033912044631534762624256070,
+        0.1216704729278033912044631534762624256070,
+        0.1155056680537256013533444839067835598622,
+        0.1155056680537256013533444839067835598622,
+        0.1074442701159656347825773424466062227946,
+        0.1074442701159656347825773424466062227946,
+        0.0976186521041138882698806644642471544279,
+        0.0976186521041138882698806644642471544279,
+        0.0861901615319532759171852029837426671850,
+        0.0861901615319532759171852029837426671850,
+        0.0733464814110803057340336152531165181193,
+        0.0733464814110803057340336152531165181193,
+        0.0592985849154367807463677585001085845412,
+        0.0592985849154367807463677585001085845412,
+        0.0442774388174198061686027482113382288593,
+        0.0442774388174198061686027482113382288593,
+        0.0285313886289336631813078159518782864491,
+        0.0285313886289336631813078159518782864491,
+        0.0123412297999871995468056670700372915759,
+        0.0123412297999871995468056670700372915759
+      ],
+
+      arcfn: function(t, derivativeFn) {
+        var d = derivativeFn(t);
+        var l = d.x*d.x + d.y*d.y;
+        if(typeof d.z !== "undefined") {
+          l += d.z*d.z;
+        }
+        return sqrt(l);
+      },
+
+      between: function(v, m, M) {
+        return (m <= v && v <= M) || utils.approximately(v, m) || utils.approximately(v, M);
+      },
+
+      approximately: function(a,b,precision) {
+        return abs(a-b) <= (precision || epsilon);
+      },
+
+      length: function(derivativeFn) {
+        var z=0.5,sum=0,len=utils.Tvalues.length,i,t;
+        for(i=0; i<len; i++) {
+          t = z * utils.Tvalues[i] + z;
+          sum += utils.Cvalues[i] * utils.arcfn(t,derivativeFn);
+        }
+        return z * sum;
+      },
+
+      map: function(v, ds,de, ts,te) {
+        var d1 = de-ds, d2 = te-ts, v2 =  v-ds, r = v2/d1;
+        return ts + d2*r;
+      },
+
+      lerp: function(r, v1, v2) {
+        var ret = {
+          x: v1.x + r*(v2.x-v1.x),
+          y: v1.y + r*(v2.y-v1.y)
+        };
+        if(!!v1.z && !!v2.z) {
+          ret.z =  v1.z + r*(v2.z-v1.z);
+        }
+        return ret;
+      },
+
+      pointToString: function(p) {
+        var s = p.x+"/"+p.y;
+        if(typeof p.z !== "undefined") {
+          s += "/"+p.z;
+        }
+        return s;
+      },
+
+      pointsToString: function(points) {
+        return "[" + points.map(utils.pointToString).join(", ") + "]";
+      },
+
+      copy: function(obj) {
+        return JSON.parse(JSON.stringify(obj));
+      },
+
+      angle: function(o,v1,v2) {
+        var dx1 = v1.x - o.x,
+            dy1 = v1.y - o.y,
+            dx2 = v2.x - o.x,
+            dy2 = v2.y - o.y,
+            cross = dx1*dy2 - dy1*dx2,
+            dot = dx1*dx2 + dy1*dy2;
+        return atan2(cross, dot);
+      },
+
+      // round as string, to avoid rounding errors
+      round: function(v, d) {
+        var s = '' + v;
+        var pos = s.indexOf(".");
+        return parseFloat(s.substring(0,pos+1+d));
+      },
+
+      dist: function(p1, p2) {
+        var dx = p1.x - p2.x,
+            dy = p1.y - p2.y;
+        return sqrt(dx*dx+dy*dy);
+      },
+
+      closest: function(LUT, point) {
+        var mdist = pow(2,63), mpos, d;
+        LUT.forEach(function(p, idx) {
+          d = utils.dist(point, p);
+          if (d<mdist) {
+            mdist = d;
+            mpos = idx;
+          }
+        });
+        return { mdist:mdist, mpos:mpos };
+      },
+
+      abcratio: function(t, n) {
+        // see ratio(t) note on http://pomax.github.io/bezierinfo/#abc
+        if (n!==2 && n!==3) {
+          return false;
+        }
+        if (typeof t === "undefined") {
+          t = 0.5;
+        } else if (t===0 || t===1) {
+          return t;
+        }
+        var bottom = pow(t,n) + pow(1-t,n), top = bottom - 1;
+        return abs(top/bottom);
+      },
+
+      projectionratio: function(t, n) {
+        // see u(t) note on http://pomax.github.io/bezierinfo/#abc
+        if (n!==2 && n!==3) {
+          return false;
+        }
+        if (typeof t === "undefined") {
+          t = 0.5;
+        } else if (t===0 || t===1) {
+          return t;
+        }
+        var top = pow(1-t, n), bottom = pow(t,n) + top;
+        return top/bottom;
+      },
+
+      lli8: function(x1,y1,x2,y2,x3,y3,x4,y4) {
+        var nx=(x1*y2-y1*x2)*(x3-x4)-(x1-x2)*(x3*y4-y3*x4),
+            ny=(x1*y2-y1*x2)*(y3-y4)-(y1-y2)*(x3*y4-y3*x4),
+            d=(x1-x2)*(y3-y4)-(y1-y2)*(x3-x4);
+        if(d==0) { return false; }
+        return { x: nx/d, y: ny/d };
+      },
+
+      lli4: function(p1,p2,p3,p4) {
+        var x1 = p1.x, y1 = p1.y,
+            x2 = p2.x, y2 = p2.y,
+            x3 = p3.x, y3 = p3.y,
+            x4 = p4.x, y4 = p4.y;
+        return utils.lli8(x1,y1,x2,y2,x3,y3,x4,y4);
+      },
+
+      lli: function(v1, v2) {
+        return utils.lli4(v1,v1.c,v2,v2.c);
+      },
+
+      makeline: function(p1,p2) {
+        var Bezier = __webpack_require__(161);
+        var x1 = p1.x, y1 = p1.y, x2 = p2.x, y2 = p2.y, dx = (x2-x1)/3, dy = (y2-y1)/3;
+        return new Bezier(x1, y1, x1+dx, y1+dy, x1+2*dx, y1+2*dy, x2, y2);
+      },
+
+      findbbox: function(sections) {
+        var mx=nMax,my=nMax,MX=nMin,MY=nMin;
+        sections.forEach(function(s) {
+          var bbox = s.bbox();
+          if(mx > bbox.x.min) mx = bbox.x.min;
+          if(my > bbox.y.min) my = bbox.y.min;
+          if(MX < bbox.x.max) MX = bbox.x.max;
+          if(MY < bbox.y.max) MY = bbox.y.max;
+        });
+        return {
+          x: { min: mx, mid:(mx+MX)/2, max: MX, size:MX-mx },
+          y: { min: my, mid:(my+MY)/2, max: MY, size:MY-my }
+        }
+      },
+
+      shapeintersections: function(s1, bbox1, s2, bbox2, curveIntersectionThreshold) {
+        if(!utils.bboxoverlap(bbox1, bbox2)) return [];
+        var intersections = [];
+        var a1 = [s1.startcap, s1.forward, s1.back, s1.endcap];
+        var a2 = [s2.startcap, s2.forward, s2.back, s2.endcap];
+        a1.forEach(function(l1) {
+          if(l1.virtual) return;
+          a2.forEach(function(l2) {
+            if(l2.virtual) return;
+            var iss = l1.intersects(l2, curveIntersectionThreshold);
+            if(iss.length>0) {
+              iss.c1 = l1;
+              iss.c2 = l2;
+              iss.s1 = s1;
+              iss.s2 = s2;
+              intersections.push(iss);
+            }
+          });
+        });
+        return intersections;
+      },
+
+      makeshape: function(forward, back, curveIntersectionThreshold) {
+        var bpl = back.points.length;
+        var fpl = forward.points.length;
+        var start  = utils.makeline(back.points[bpl-1], forward.points[0]);
+        var end    = utils.makeline(forward.points[fpl-1], back.points[0]);
+        var shape  = {
+          startcap: start,
+          forward: forward,
+          back: back,
+          endcap: end,
+          bbox: utils.findbbox([start, forward, back, end])
+        };
+        var self = utils;
+        shape.intersections = function(s2) {
+          return self.shapeintersections(shape,shape.bbox,s2,s2.bbox, curveIntersectionThreshold);
+        };
+        return shape;
+      },
+
+      getminmax: function(curve, d, list) {
+        if(!list) return { min:0, max:0 };
+        var min=nMax, max=nMin,t,c;
+        if(list.indexOf(0)===-1) { list = [0].concat(list); }
+        if(list.indexOf(1)===-1) { list.push(1); }
+        for(var i=0,len=list.length; i<len; i++) {
+          t = list[i];
+          c = curve.get(t);
+          if(c[d] < min) { min = c[d]; }
+          if(c[d] > max) { max = c[d]; }
+        }
+        return { min:min, mid:(min+max)/2, max:max, size:max-min };
+      },
+
+      align: function(points, line) {
+        var tx = line.p1.x,
+            ty = line.p1.y,
+            a = -atan2(line.p2.y-ty, line.p2.x-tx),
+            d = function(v) {
+              return {
+                x: (v.x-tx)*cos(a) - (v.y-ty)*sin(a),
+                y: (v.x-tx)*sin(a) + (v.y-ty)*cos(a)
+              };
+            };
+        return points.map(d);
+      },
+
+      roots: function(points, line) {
+        line = line || {p1:{x:0,y:0},p2:{x:1,y:0}};
+        var order = points.length - 1;
+        var p = utils.align(points, line);
+        var reduce = function(t) { return 0<=t && t <=1; };
+
+        if (order === 2) {
+          var a = p[0].y,
+              b = p[1].y,
+              c = p[2].y,
+              d = a - 2*b + c;
+          if(d!==0) {
+            var m1 = -sqrt(b*b-a*c),
+                m2 = -a+b,
+                v1 = -( m1+m2)/d,
+                v2 = -(-m1+m2)/d;
+            return [v1, v2].filter(reduce);
+          }
+          else if(b!==c && d===0) {
+            return [ (2*b-c)/2*(b-c) ].filter(reduce);
+          }
+          return [];
+        }
+
+        // see http://www.trans4mind.com/personal_development/mathematics/polynomials/cubicAlgebra.htm
+        var pa = p[0].y,
+            pb = p[1].y,
+            pc = p[2].y,
+            pd = p[3].y,
+            d = (-pa + 3*pb - 3*pc + pd),
+            a = (3*pa - 6*pb + 3*pc) / d,
+            b = (-3*pa + 3*pb) / d,
+            c = pa / d,
+            p = (3*b - a*a)/3,
+            p3 = p/3,
+            q = (2*a*a*a - 9*a*b + 27*c)/27,
+            q2 = q/2,
+            discriminant = q2*q2 + p3*p3*p3,
+            u1,v1,x1,x2,x3;
+         if (discriminant < 0) {
+          var mp3 = -p/3,
+              mp33 = mp3*mp3*mp3,
+              r = sqrt( mp33 ),
+              t = -q/(2*r),
+              cosphi = t<-1 ? -1 : t>1 ? 1 : t,
+              phi = acos(cosphi),
+              crtr = crt(r),
+              t1 = 2*crtr;
+          x1 = t1 * cos(phi/3) - a/3;
+          x2 = t1 * cos((phi+tau)/3) - a/3;
+          x3 = t1 * cos((phi+2*tau)/3) - a/3;
+          return [x1, x2, x3].filter(reduce);
+        } else if(discriminant === 0) {
+          u1 = q2 < 0 ? crt(-q2) : -crt(q2);
+          x1 = 2*u1-a/3;
+          x2 = -u1 - a/3;
+          return [x1,x2].filter(reduce);
+        } else {
+          var sd = sqrt(discriminant);
+          u1 = crt(-q2+sd);
+          v1 = crt(q2+sd);
+          return [u1-v1-a/3].filter(reduce);;
+        }
+      },
+
+      droots: function(p) {
+        // quadratic roots are easy
+        if(p.length === 3) {
+          var a = p[0],
+              b = p[1],
+              c = p[2],
+              d = a - 2*b + c;
+          if(d!==0) {
+            var m1 = -sqrt(b*b-a*c),
+                m2 = -a+b,
+                v1 = -( m1+m2)/d,
+                v2 = -(-m1+m2)/d;
+            return [v1, v2];
+          }
+          else if(b!==c && d===0) {
+            return [(2*b-c)/(2*(b-c))];
+          }
+          return [];
+        }
+
+        // linear roots are even easier
+        if(p.length === 2) {
+          var a = p[0], b = p[1];
+          if(a!==b) {
+            return [a/(a-b)];
+          }
+          return [];
+        }
+      },
+
+      inflections: function(points) {
+        if (points.length<4) return [];
+
+        // FIXME: TODO: add in inflection abstraction for quartic+ curves?
+
+        var p = utils.align(points, { p1: points[0], p2: points.slice(-1)[0] }),
+            a = p[2].x * p[1].y,
+            b = p[3].x * p[1].y,
+            c = p[1].x * p[2].y,
+            d = p[3].x * p[2].y,
+            v1 = 18 * (-3*a + 2*b + 3*c - d),
+            v2 = 18 * (3*a - b - 3*c),
+            v3 = 18 * (c - a);
+
+        if (utils.approximately(v1,0)){
+          if(!utils.approximately(v2,0)){
+            var t = -v3/v2;
+            if (0 <= t && t <= 1)
+               return [t];
+          }
+          return [];
+        }
+
+        var trm = v2*v2 - 4*v1*v3,
+            sq = Math.sqrt(trm),
+            d = 2 * v1;
+
+        if (utils.approximately(d,0)) return [];
+
+        return [(sq-v2)/d, -(v2+sq)/d].filter(function(r) {
+          return (0 <= r && r <= 1);
+        });
+      },
+
+      bboxoverlap: function(b1,b2) {
+        var dims=['x','y'],len=dims.length,i,dim,l,t,d
+        for(i=0; i<len; i++) {
+          dim = dims[i];
+          l = b1[dim].mid;
+          t = b2[dim].mid;
+          d = (b1[dim].size + b2[dim].size)/2;
+          if(abs(l-t) >= d) return false;
+        }
+        return true;
+      },
+
+      expandbox: function(bbox, _bbox) {
+        if(_bbox.x.min < bbox.x.min) { bbox.x.min = _bbox.x.min; }
+        if(_bbox.y.min < bbox.y.min) { bbox.y.min = _bbox.y.min; }
+        if(_bbox.z && _bbox.z.min < bbox.z.min) { bbox.z.min = _bbox.z.min; }
+        if(_bbox.x.max > bbox.x.max) { bbox.x.max = _bbox.x.max; }
+        if(_bbox.y.max > bbox.y.max) { bbox.y.max = _bbox.y.max; }
+        if(_bbox.z && _bbox.z.max > bbox.z.max) { bbox.z.max = _bbox.z.max; }
+        bbox.x.mid = (bbox.x.min + bbox.x.max)/2;
+        bbox.y.mid = (bbox.y.min + bbox.y.max)/2;
+        if(bbox.z) { bbox.z.mid = (bbox.z.min + bbox.z.max)/2; }
+        bbox.x.size = bbox.x.max - bbox.x.min;
+        bbox.y.size = bbox.y.max - bbox.y.min;
+        if(bbox.z) { bbox.z.size = bbox.z.max - bbox.z.min; }
+      },
+
+      pairiteration: function(c1, c2, curveIntersectionThreshold) {
+        var c1b = c1.bbox(),
+            c2b = c2.bbox(),
+            r = 100000,
+            threshold = curveIntersectionThreshold || 0.5;
+        if(c1b.x.size + c1b.y.size < threshold && c2b.x.size + c2b.y.size < threshold) {
+          return [ ((r * (c1._t1+c1._t2)/2)|0)/r + "/" + ((r * (c2._t1+c2._t2)/2)|0)/r ];
+        }
+        var cc1 = c1.split(0.5),
+            cc2 = c2.split(0.5),
+            pairs = [
+              {left: cc1.left, right: cc2.left },
+              {left: cc1.left, right: cc2.right },
+              {left: cc1.right, right: cc2.right },
+              {left: cc1.right, right: cc2.left }];
+        pairs = pairs.filter(function(pair) {
+          return utils.bboxoverlap(pair.left.bbox(),pair.right.bbox());
+        });
+        var results = [];
+        if(pairs.length === 0) return results;
+        pairs.forEach(function(pair) {
+          results = results.concat(
+            utils.pairiteration(pair.left, pair.right, threshold)
+          );
+        })
+        results = results.filter(function(v,i) {
+          return results.indexOf(v) === i;
+        });
+        return results;
+      },
+
+      getccenter: function(p1,p2,p3) {
+        var dx1 = (p2.x - p1.x),
+            dy1 = (p2.y - p1.y),
+            dx2 = (p3.x - p2.x),
+            dy2 = (p3.y - p2.y);
+        var dx1p = dx1 * cos(quart) - dy1 * sin(quart),
+            dy1p = dx1 * sin(quart) + dy1 * cos(quart),
+            dx2p = dx2 * cos(quart) - dy2 * sin(quart),
+            dy2p = dx2 * sin(quart) + dy2 * cos(quart);
+        // chord midpoints
+        var mx1 = (p1.x + p2.x)/2,
+            my1 = (p1.y + p2.y)/2,
+            mx2 = (p2.x + p3.x)/2,
+            my2 = (p2.y + p3.y)/2;
+        // midpoint offsets
+        var mx1n = mx1 + dx1p,
+            my1n = my1 + dy1p,
+            mx2n = mx2 + dx2p,
+            my2n = my2 + dy2p;
+        // intersection of these lines:
+        var arc = utils.lli8(mx1,my1,mx1n,my1n, mx2,my2,mx2n,my2n),
+            r = utils.dist(arc,p1),
+            // arc start/end values, over mid point:
+            s = atan2(p1.y - arc.y, p1.x - arc.x),
+            m = atan2(p2.y - arc.y, p2.x - arc.x),
+            e = atan2(p3.y - arc.y, p3.x - arc.x),
+            _;
+        // determine arc direction (cw/ccw correction)
+        if (s<e) {
+          // if s<m<e, arc(s, e)
+          // if m<s<e, arc(e, s + tau)
+          // if s<e<m, arc(e, s + tau)
+          if (s>m || m>e) { s += tau; }
+          if (s>e) { _=e; e=s; s=_; }
+        } else {
+          // if e<m<s, arc(e, s)
+          // if m<e<s, arc(s, e + tau)
+          // if e<s<m, arc(s, e + tau)
+          if (e<m && m<s) { _=e; e=s; s=_; } else { e += tau; }
+        }
+        // assign and done.
+        arc.s = s;
+        arc.e = e;
+        arc.r = r;
+        return arc;
+      }
+    };
+
+    module.exports = utils;
+  }());
+
+
+/***/ }),
+/* 163 */
+/***/ (function(module, exports, __webpack_require__) {
+
+  (function() {
+    "use strict";
+
+    var utils = __webpack_require__(162);
+
+    /**
+     * Poly Bezier
+     * @param {[type]} curves [description]
+     */
+    var PolyBezier = function(curves) {
+      this.curves = [];
+      this._3d = false;
+      if(!!curves) {
+        this.curves = curves;
+        this._3d = this.curves[0]._3d;
+      }
+    }
+
+    PolyBezier.prototype = {
+      valueOf: function() {
+        return this.toString();
+      },
+      toString: function() {
+        return "[" + this.curves.map(function(curve) {
+          return utils.pointsToString(curve.points);
+        }).join(", ") + "]";
+      },
+      addCurve: function(curve) {
+        this.curves.push(curve);
+        this._3d = this._3d || curve._3d;
+      },
+      length: function() {
+        return this.curves.map(function(v) { return v.length(); }).reduce(function(a,b) { return a+b; });
+      },
+      curve: function(idx) {
+        return this.curves[idx];
+      },
+      bbox: function() {
+        var c = this.curves;
+        var bbox = c[0].bbox();
+        for(var i=1; i<c.length; i++) {
+          utils.expandbox(bbox, c[i].bbox());
+        }
+        return bbox;
+      },
+      offset: function(d) {
+        var offset = [];
+        this.curves.forEach(function(v) {
+          offset = offset.concat(v.offset(d));
+        });
+        return new PolyBezier(offset);
+      }
+    };
+
+    module.exports = PolyBezier;
+  }());
+
+
+/***/ }),
+/* 164 */
+/***/ (function(module, exports, __webpack_require__) {
+
+  'use strict';
+
   // utils
   exports.util = __webpack_require__(1);
   exports.DOMutil = __webpack_require__(88);
@@ -33138,12 +34626,12 @@ return /******/ (function(modules) { // webpackBootstrap
   exports.Queue = __webpack_require__(92);
 
   // Network
-  exports.Network = __webpack_require__(160);
+  exports.Network = __webpack_require__(165);
   exports.network = {
-    Images: __webpack_require__(165),
-    dotparser: __webpack_require__(162),
-    gephiParser: __webpack_require__(163),
-    allOptions: __webpack_require__(230)
+    Images: __webpack_require__(170),
+    dotparser: __webpack_require__(167),
+    gephiParser: __webpack_require__(168),
+    allOptions: __webpack_require__(235)
   };
   exports.network.convertDot = function (input) {
     return exports.network.dotparser.DOTToGraph(input);
@@ -33158,47 +34646,47 @@ return /******/ (function(modules) { // webpackBootstrap
   exports.keycharm = __webpack_require__(116);
 
 /***/ }),
-/* 160 */
+/* 165 */
 /***/ (function(module, exports, __webpack_require__) {
 
   'use strict';
 
   // Load custom shapes into CanvasRenderingContext2D
-  __webpack_require__(161);
+  __webpack_require__(166);
 
   var Emitter = __webpack_require__(99);
   var util = __webpack_require__(1);
   var DataSet = __webpack_require__(89);
   var DataView = __webpack_require__(93);
-  var dotparser = __webpack_require__(162);
-  var gephiParser = __webpack_require__(163);
+  var dotparser = __webpack_require__(167);
+  var gephiParser = __webpack_require__(168);
   var Activator = __webpack_require__(141);
-  var locales = __webpack_require__(164);
+  var locales = __webpack_require__(169);
 
-  var Images = __webpack_require__(165)['default'];
-  var Groups = __webpack_require__(167)['default'];
-  var NodesHandler = __webpack_require__(168)['default'];
-  var EdgesHandler = __webpack_require__(201)['default'];
-  var PhysicsEngine = __webpack_require__(212)['default'];
-  var ClusterEngine = __webpack_require__(221)['default'];
-  var CanvasRenderer = __webpack_require__(223)['default'];
-  var Canvas = __webpack_require__(224)['default'];
-  var View = __webpack_require__(225)['default'];
-  var InteractionHandler = __webpack_require__(226)['default'];
-  var SelectionHandler = __webpack_require__(228)['default'];
-  var LayoutEngine = __webpack_require__(210)['default'];
-  var ManipulationSystem = __webpack_require__(229)['default'];
+  var Images = __webpack_require__(170)['default'];
+  var Groups = __webpack_require__(172)['default'];
+  var NodesHandler = __webpack_require__(173)['default'];
+  var EdgesHandler = __webpack_require__(206)['default'];
+  var PhysicsEngine = __webpack_require__(217)['default'];
+  var ClusterEngine = __webpack_require__(226)['default'];
+  var CanvasRenderer = __webpack_require__(228)['default'];
+  var Canvas = __webpack_require__(229)['default'];
+  var View = __webpack_require__(230)['default'];
+  var InteractionHandler = __webpack_require__(231)['default'];
+  var SelectionHandler = __webpack_require__(233)['default'];
+  var LayoutEngine = __webpack_require__(215)['default'];
+  var ManipulationSystem = __webpack_require__(234)['default'];
   var Configurator = __webpack_require__(147)['default'];
   var Validator = __webpack_require__(145)['default'];
 
   var _require = __webpack_require__(145),
       printStyle = _require.printStyle;
 
-  var _require2 = __webpack_require__(230),
+  var _require2 = __webpack_require__(235),
       allOptions = _require2.allOptions,
       configureOptions = _require2.configureOptions;
 
-  var KamadaKawai = __webpack_require__(231)['default'];
+  var KamadaKawai = __webpack_require__(236)['default'];
 
   /**
    * @constructor Network
@@ -33764,7 +35252,7 @@ return /******/ (function(modules) { // webpackBootstrap
   module.exports = Network;
 
 /***/ }),
-/* 161 */
+/* 166 */
 /***/ (function(module, exports) {
 
   'use strict';
@@ -34064,7 +35552,7 @@ return /******/ (function(modules) { // webpackBootstrap
   }
 
 /***/ }),
-/* 162 */
+/* 167 */
 /***/ (function(module, exports, __webpack_require__) {
 
   'use strict';
@@ -34997,7 +36485,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports.DOTToGraph = DOTToGraph;
 
 /***/ }),
-/* 163 */
+/* 168 */
 /***/ (function(module, exports) {
 
   'use strict';
@@ -35074,7 +36562,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports.parseGephi = parseGephi;
 
 /***/ }),
-/* 164 */
+/* 169 */
 /***/ (function(module, exports) {
 
   'use strict';
@@ -35210,7 +36698,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports['ru_RU'] = exports['ru'];
 
 /***/ }),
-/* 165 */
+/* 170 */
 /***/ (function(module, exports, __webpack_require__) {
 
   "use strict";
@@ -35227,7 +36715,7 @@ return /******/ (function(modules) { // webpackBootstrap
 
   var _createClass3 = _interopRequireDefault(_createClass2);
 
-  var _CachedImage = __webpack_require__(166);
+  var _CachedImage = __webpack_require__(171);
 
   var _CachedImage2 = _interopRequireDefault(_CachedImage);
 
@@ -35354,7 +36842,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports["default"] = Images;
 
 /***/ }),
-/* 166 */
+/* 171 */
 /***/ (function(module, exports, __webpack_require__) {
 
   'use strict';
@@ -35542,7 +37030,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports['default'] = CachedImage;
 
 /***/ }),
-/* 167 */
+/* 172 */
 /***/ (function(module, exports, __webpack_require__) {
 
   "use strict";
@@ -35691,7 +37179,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports["default"] = Groups;
 
 /***/ }),
-/* 168 */
+/* 173 */
 /***/ (function(module, exports, __webpack_require__) {
 
   'use strict';
@@ -35714,8 +37202,8 @@ return /******/ (function(modules) { // webpackBootstrap
   var DataSet = __webpack_require__(89);
   var DataView = __webpack_require__(93);
 
-  var Node = __webpack_require__(169)['default'];
-  var Label = __webpack_require__(170)['default'];
+  var Node = __webpack_require__(174)['default'];
+  var Label = __webpack_require__(175)['default'];
 
   var NodesHandler = function () {
     function NodesHandler(body, images, groups, layoutEngine) {
@@ -36242,7 +37730,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports['default'] = NodesHandler;
 
 /***/ }),
-/* 169 */
+/* 174 */
 /***/ (function(module, exports, __webpack_require__) {
 
   'use strict';
@@ -36267,22 +37755,22 @@ return /******/ (function(modules) { // webpackBootstrap
 
   var util = __webpack_require__(1);
 
-  var Label = __webpack_require__(170)['default'];
+  var Label = __webpack_require__(175)['default'];
 
-  var Box = __webpack_require__(175)['default'];
-  var Circle = __webpack_require__(186)['default'];
-  var CircularImage = __webpack_require__(188)['default'];
-  var Database = __webpack_require__(189)['default'];
-  var Diamond = __webpack_require__(190)['default'];
-  var Dot = __webpack_require__(192)['default'];
-  var Ellipse = __webpack_require__(193)['default'];
-  var Icon = __webpack_require__(194)['default'];
-  var Image = __webpack_require__(195)['default'];
-  var Square = __webpack_require__(196)['default'];
-  var Star = __webpack_require__(197)['default'];
-  var Text = __webpack_require__(198)['default'];
-  var Triangle = __webpack_require__(199)['default'];
-  var TriangleDown = __webpack_require__(200)['default'];
+  var Box = __webpack_require__(180)['default'];
+  var Circle = __webpack_require__(191)['default'];
+  var CircularImage = __webpack_require__(193)['default'];
+  var Database = __webpack_require__(194)['default'];
+  var Diamond = __webpack_require__(195)['default'];
+  var Dot = __webpack_require__(197)['default'];
+  var Ellipse = __webpack_require__(198)['default'];
+  var Icon = __webpack_require__(199)['default'];
+  var Image = __webpack_require__(200)['default'];
+  var Square = __webpack_require__(201)['default'];
+  var Star = __webpack_require__(202)['default'];
+  var Text = __webpack_require__(203)['default'];
+  var Triangle = __webpack_require__(204)['default'];
+  var TriangleDown = __webpack_require__(205)['default'];
   var Validator = __webpack_require__(145)['default'];
 
   var _require = __webpack_require__(145),
@@ -36875,7 +38363,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports['default'] = Node;
 
 /***/ }),
-/* 170 */
+/* 175 */
 /***/ (function(module, exports, __webpack_require__) {
 
   'use strict';
@@ -36884,7 +38372,7 @@ return /******/ (function(modules) { // webpackBootstrap
     value: true
   });
 
-  var _slicedToArray2 = __webpack_require__(171);
+  var _slicedToArray2 = __webpack_require__(176);
 
   var _slicedToArray3 = _interopRequireDefault(_slicedToArray2);
 
@@ -37914,14 +39402,14 @@ return /******/ (function(modules) { // webpackBootstrap
   exports['default'] = Label;
 
 /***/ }),
-/* 171 */
+/* 176 */
 /***/ (function(module, exports, __webpack_require__) {
 
   "use strict";
 
   exports.__esModule = true;
 
-  var _isIterable2 = __webpack_require__(172);
+  var _isIterable2 = __webpack_require__(177);
 
   var _isIterable3 = _interopRequireDefault(_isIterable2);
 
@@ -37970,21 +39458,21 @@ return /******/ (function(modules) { // webpackBootstrap
   }();
 
 /***/ }),
-/* 172 */
+/* 177 */
 /***/ (function(module, exports, __webpack_require__) {
 
-  module.exports = { "default": __webpack_require__(173), __esModule: true };
+  module.exports = { "default": __webpack_require__(178), __esModule: true };
 
 /***/ }),
-/* 173 */
+/* 178 */
 /***/ (function(module, exports, __webpack_require__) {
 
   __webpack_require__(4);
   __webpack_require__(50);
-  module.exports = __webpack_require__(174);
+  module.exports = __webpack_require__(179);
 
 /***/ }),
-/* 174 */
+/* 179 */
 /***/ (function(module, exports, __webpack_require__) {
 
   var classof   = __webpack_require__(54)
@@ -37998,7 +39486,7 @@ return /******/ (function(modules) { // webpackBootstrap
   };
 
 /***/ }),
-/* 175 */
+/* 180 */
 /***/ (function(module, exports, __webpack_require__) {
 
   'use strict';
@@ -38007,7 +39495,7 @@ return /******/ (function(modules) { // webpackBootstrap
     value: true
   });
 
-  var _getPrototypeOf = __webpack_require__(176);
+  var _getPrototypeOf = __webpack_require__(181);
 
   var _getPrototypeOf2 = _interopRequireDefault(_getPrototypeOf);
 
@@ -38019,15 +39507,15 @@ return /******/ (function(modules) { // webpackBootstrap
 
   var _createClass3 = _interopRequireDefault(_createClass2);
 
-  var _possibleConstructorReturn2 = __webpack_require__(179);
+  var _possibleConstructorReturn2 = __webpack_require__(184);
 
   var _possibleConstructorReturn3 = _interopRequireDefault(_possibleConstructorReturn2);
 
-  var _inherits2 = __webpack_require__(180);
+  var _inherits2 = __webpack_require__(185);
 
   var _inherits3 = _interopRequireDefault(_inherits2);
 
-  var _NodeBase2 = __webpack_require__(185);
+  var _NodeBase2 = __webpack_require__(190);
 
   var _NodeBase3 = _interopRequireDefault(_NodeBase2);
 
@@ -38095,20 +39583,20 @@ return /******/ (function(modules) { // webpackBootstrap
   exports['default'] = Box;
 
 /***/ }),
-/* 176 */
+/* 181 */
 /***/ (function(module, exports, __webpack_require__) {
 
-  module.exports = { "default": __webpack_require__(177), __esModule: true };
+  module.exports = { "default": __webpack_require__(182), __esModule: true };
 
 /***/ }),
-/* 177 */
+/* 182 */
 /***/ (function(module, exports, __webpack_require__) {
 
-  __webpack_require__(178);
+  __webpack_require__(183);
   module.exports = __webpack_require__(17).Object.getPrototypeOf;
 
 /***/ }),
-/* 178 */
+/* 183 */
 /***/ (function(module, exports, __webpack_require__) {
 
   // 19.1.2.9 Object.getPrototypeOf(O)
@@ -38122,7 +39610,7 @@ return /******/ (function(modules) { // webpackBootstrap
   });
 
 /***/ }),
-/* 179 */
+/* 184 */
 /***/ (function(module, exports, __webpack_require__) {
 
   "use strict";
@@ -38144,14 +39632,14 @@ return /******/ (function(modules) { // webpackBootstrap
   };
 
 /***/ }),
-/* 180 */
+/* 185 */
 /***/ (function(module, exports, __webpack_require__) {
 
   "use strict";
 
   exports.__esModule = true;
 
-  var _setPrototypeOf = __webpack_require__(181);
+  var _setPrototypeOf = __webpack_require__(186);
 
   var _setPrototypeOf2 = _interopRequireDefault(_setPrototypeOf);
 
@@ -38182,28 +39670,28 @@ return /******/ (function(modules) { // webpackBootstrap
   };
 
 /***/ }),
-/* 181 */
+/* 186 */
 /***/ (function(module, exports, __webpack_require__) {
 
-  module.exports = { "default": __webpack_require__(182), __esModule: true };
+  module.exports = { "default": __webpack_require__(187), __esModule: true };
 
 /***/ }),
-/* 182 */
+/* 187 */
 /***/ (function(module, exports, __webpack_require__) {
 
-  __webpack_require__(183);
+  __webpack_require__(188);
   module.exports = __webpack_require__(17).Object.setPrototypeOf;
 
 /***/ }),
-/* 183 */
+/* 188 */
 /***/ (function(module, exports, __webpack_require__) {
 
   // 19.1.3.19 Object.setPrototypeOf(O, proto)
   var $export = __webpack_require__(15);
-  $export($export.S, 'Object', {setPrototypeOf: __webpack_require__(184).set});
+  $export($export.S, 'Object', {setPrototypeOf: __webpack_require__(189).set});
 
 /***/ }),
-/* 184 */
+/* 189 */
 /***/ (function(module, exports, __webpack_require__) {
 
   // Works with __proto__ only. Old v8 can't work with null proto objects.
@@ -38233,7 +39721,7 @@ return /******/ (function(modules) { // webpackBootstrap
   };
 
 /***/ }),
-/* 185 */
+/* 190 */
 /***/ (function(module, exports, __webpack_require__) {
 
   'use strict';
@@ -38461,7 +39949,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports['default'] = NodeBase;
 
 /***/ }),
-/* 186 */
+/* 191 */
 /***/ (function(module, exports, __webpack_require__) {
 
   'use strict';
@@ -38470,7 +39958,7 @@ return /******/ (function(modules) { // webpackBootstrap
     value: true
   });
 
-  var _getPrototypeOf = __webpack_require__(176);
+  var _getPrototypeOf = __webpack_require__(181);
 
   var _getPrototypeOf2 = _interopRequireDefault(_getPrototypeOf);
 
@@ -38482,15 +39970,15 @@ return /******/ (function(modules) { // webpackBootstrap
 
   var _createClass3 = _interopRequireDefault(_createClass2);
 
-  var _possibleConstructorReturn2 = __webpack_require__(179);
+  var _possibleConstructorReturn2 = __webpack_require__(184);
 
   var _possibleConstructorReturn3 = _interopRequireDefault(_possibleConstructorReturn2);
 
-  var _inherits2 = __webpack_require__(180);
+  var _inherits2 = __webpack_require__(185);
 
   var _inherits3 = _interopRequireDefault(_inherits2);
 
-  var _CircleImageBase2 = __webpack_require__(187);
+  var _CircleImageBase2 = __webpack_require__(192);
 
   var _CircleImageBase3 = _interopRequireDefault(_CircleImageBase2);
 
@@ -38557,7 +40045,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports['default'] = Circle;
 
 /***/ }),
-/* 187 */
+/* 192 */
 /***/ (function(module, exports, __webpack_require__) {
 
   'use strict';
@@ -38566,7 +40054,7 @@ return /******/ (function(modules) { // webpackBootstrap
     value: true
   });
 
-  var _getPrototypeOf = __webpack_require__(176);
+  var _getPrototypeOf = __webpack_require__(181);
 
   var _getPrototypeOf2 = _interopRequireDefault(_getPrototypeOf);
 
@@ -38578,19 +40066,19 @@ return /******/ (function(modules) { // webpackBootstrap
 
   var _createClass3 = _interopRequireDefault(_createClass2);
 
-  var _possibleConstructorReturn2 = __webpack_require__(179);
+  var _possibleConstructorReturn2 = __webpack_require__(184);
 
   var _possibleConstructorReturn3 = _interopRequireDefault(_possibleConstructorReturn2);
 
-  var _inherits2 = __webpack_require__(180);
+  var _inherits2 = __webpack_require__(185);
 
   var _inherits3 = _interopRequireDefault(_inherits2);
 
-  var _NodeBase2 = __webpack_require__(185);
+  var _NodeBase2 = __webpack_require__(190);
 
   var _NodeBase3 = _interopRequireDefault(_NodeBase2);
 
-  var _CachedImage = __webpack_require__(166);
+  var _CachedImage = __webpack_require__(171);
 
   var _CachedImage2 = _interopRequireDefault(_CachedImage);
 
@@ -38771,7 +40259,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports['default'] = CircleImageBase;
 
 /***/ }),
-/* 188 */
+/* 193 */
 /***/ (function(module, exports, __webpack_require__) {
 
   'use strict';
@@ -38780,7 +40268,7 @@ return /******/ (function(modules) { // webpackBootstrap
     value: true
   });
 
-  var _getPrototypeOf = __webpack_require__(176);
+  var _getPrototypeOf = __webpack_require__(181);
 
   var _getPrototypeOf2 = _interopRequireDefault(_getPrototypeOf);
 
@@ -38792,15 +40280,15 @@ return /******/ (function(modules) { // webpackBootstrap
 
   var _createClass3 = _interopRequireDefault(_createClass2);
 
-  var _possibleConstructorReturn2 = __webpack_require__(179);
+  var _possibleConstructorReturn2 = __webpack_require__(184);
 
   var _possibleConstructorReturn3 = _interopRequireDefault(_possibleConstructorReturn2);
 
-  var _inherits2 = __webpack_require__(180);
+  var _inherits2 = __webpack_require__(185);
 
   var _inherits3 = _interopRequireDefault(_inherits2);
 
-  var _CircleImageBase2 = __webpack_require__(187);
+  var _CircleImageBase2 = __webpack_require__(192);
 
   var _CircleImageBase3 = _interopRequireDefault(_CircleImageBase2);
 
@@ -38892,7 +40380,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports['default'] = CircularImage;
 
 /***/ }),
-/* 189 */
+/* 194 */
 /***/ (function(module, exports, __webpack_require__) {
 
   'use strict';
@@ -38901,7 +40389,7 @@ return /******/ (function(modules) { // webpackBootstrap
     value: true
   });
 
-  var _getPrototypeOf = __webpack_require__(176);
+  var _getPrototypeOf = __webpack_require__(181);
 
   var _getPrototypeOf2 = _interopRequireDefault(_getPrototypeOf);
 
@@ -38913,15 +40401,15 @@ return /******/ (function(modules) { // webpackBootstrap
 
   var _createClass3 = _interopRequireDefault(_createClass2);
 
-  var _possibleConstructorReturn2 = __webpack_require__(179);
+  var _possibleConstructorReturn2 = __webpack_require__(184);
 
   var _possibleConstructorReturn3 = _interopRequireDefault(_possibleConstructorReturn2);
 
-  var _inherits2 = __webpack_require__(180);
+  var _inherits2 = __webpack_require__(185);
 
   var _inherits3 = _interopRequireDefault(_inherits2);
 
-  var _NodeBase2 = __webpack_require__(185);
+  var _NodeBase2 = __webpack_require__(190);
 
   var _NodeBase3 = _interopRequireDefault(_NodeBase2);
 
@@ -38976,7 +40464,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports['default'] = Database;
 
 /***/ }),
-/* 190 */
+/* 195 */
 /***/ (function(module, exports, __webpack_require__) {
 
   'use strict';
@@ -38985,7 +40473,7 @@ return /******/ (function(modules) { // webpackBootstrap
     value: true
   });
 
-  var _getPrototypeOf = __webpack_require__(176);
+  var _getPrototypeOf = __webpack_require__(181);
 
   var _getPrototypeOf2 = _interopRequireDefault(_getPrototypeOf);
 
@@ -38997,15 +40485,15 @@ return /******/ (function(modules) { // webpackBootstrap
 
   var _createClass3 = _interopRequireDefault(_createClass2);
 
-  var _possibleConstructorReturn2 = __webpack_require__(179);
+  var _possibleConstructorReturn2 = __webpack_require__(184);
 
   var _possibleConstructorReturn3 = _interopRequireDefault(_possibleConstructorReturn2);
 
-  var _inherits2 = __webpack_require__(180);
+  var _inherits2 = __webpack_require__(185);
 
   var _inherits3 = _interopRequireDefault(_inherits2);
 
-  var _ShapeBase2 = __webpack_require__(191);
+  var _ShapeBase2 = __webpack_require__(196);
 
   var _ShapeBase3 = _interopRequireDefault(_ShapeBase2);
 
@@ -39036,7 +40524,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports['default'] = Diamond;
 
 /***/ }),
-/* 191 */
+/* 196 */
 /***/ (function(module, exports, __webpack_require__) {
 
   'use strict';
@@ -39045,7 +40533,7 @@ return /******/ (function(modules) { // webpackBootstrap
     value: true
   });
 
-  var _getPrototypeOf = __webpack_require__(176);
+  var _getPrototypeOf = __webpack_require__(181);
 
   var _getPrototypeOf2 = _interopRequireDefault(_getPrototypeOf);
 
@@ -39057,15 +40545,15 @@ return /******/ (function(modules) { // webpackBootstrap
 
   var _createClass3 = _interopRequireDefault(_createClass2);
 
-  var _possibleConstructorReturn2 = __webpack_require__(179);
+  var _possibleConstructorReturn2 = __webpack_require__(184);
 
   var _possibleConstructorReturn3 = _interopRequireDefault(_possibleConstructorReturn2);
 
-  var _inherits2 = __webpack_require__(180);
+  var _inherits2 = __webpack_require__(185);
 
   var _inherits3 = _interopRequireDefault(_inherits2);
 
-  var _NodeBase2 = __webpack_require__(185);
+  var _NodeBase2 = __webpack_require__(190);
 
   var _NodeBase3 = _interopRequireDefault(_NodeBase2);
 
@@ -39135,7 +40623,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports['default'] = ShapeBase;
 
 /***/ }),
-/* 192 */
+/* 197 */
 /***/ (function(module, exports, __webpack_require__) {
 
   'use strict';
@@ -39144,7 +40632,7 @@ return /******/ (function(modules) { // webpackBootstrap
     value: true
   });
 
-  var _getPrototypeOf = __webpack_require__(176);
+  var _getPrototypeOf = __webpack_require__(181);
 
   var _getPrototypeOf2 = _interopRequireDefault(_getPrototypeOf);
 
@@ -39156,15 +40644,15 @@ return /******/ (function(modules) { // webpackBootstrap
 
   var _createClass3 = _interopRequireDefault(_createClass2);
 
-  var _possibleConstructorReturn2 = __webpack_require__(179);
+  var _possibleConstructorReturn2 = __webpack_require__(184);
 
   var _possibleConstructorReturn3 = _interopRequireDefault(_possibleConstructorReturn2);
 
-  var _inherits2 = __webpack_require__(180);
+  var _inherits2 = __webpack_require__(185);
 
   var _inherits3 = _interopRequireDefault(_inherits2);
 
-  var _ShapeBase2 = __webpack_require__(191);
+  var _ShapeBase2 = __webpack_require__(196);
 
   var _ShapeBase3 = _interopRequireDefault(_ShapeBase2);
 
@@ -39196,7 +40684,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports['default'] = Dot;
 
 /***/ }),
-/* 193 */
+/* 198 */
 /***/ (function(module, exports, __webpack_require__) {
 
   'use strict';
@@ -39205,7 +40693,7 @@ return /******/ (function(modules) { // webpackBootstrap
     value: true
   });
 
-  var _getPrototypeOf = __webpack_require__(176);
+  var _getPrototypeOf = __webpack_require__(181);
 
   var _getPrototypeOf2 = _interopRequireDefault(_getPrototypeOf);
 
@@ -39217,15 +40705,15 @@ return /******/ (function(modules) { // webpackBootstrap
 
   var _createClass3 = _interopRequireDefault(_createClass2);
 
-  var _possibleConstructorReturn2 = __webpack_require__(179);
+  var _possibleConstructorReturn2 = __webpack_require__(184);
 
   var _possibleConstructorReturn3 = _interopRequireDefault(_possibleConstructorReturn2);
 
-  var _inherits2 = __webpack_require__(180);
+  var _inherits2 = __webpack_require__(185);
 
   var _inherits3 = _interopRequireDefault(_inherits2);
 
-  var _NodeBase2 = __webpack_require__(185);
+  var _NodeBase2 = __webpack_require__(190);
 
   var _NodeBase3 = _interopRequireDefault(_NodeBase2);
 
@@ -39284,7 +40772,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports['default'] = Ellipse;
 
 /***/ }),
-/* 194 */
+/* 199 */
 /***/ (function(module, exports, __webpack_require__) {
 
   'use strict';
@@ -39293,7 +40781,7 @@ return /******/ (function(modules) { // webpackBootstrap
     value: true
   });
 
-  var _getPrototypeOf = __webpack_require__(176);
+  var _getPrototypeOf = __webpack_require__(181);
 
   var _getPrototypeOf2 = _interopRequireDefault(_getPrototypeOf);
 
@@ -39305,15 +40793,15 @@ return /******/ (function(modules) { // webpackBootstrap
 
   var _createClass3 = _interopRequireDefault(_createClass2);
 
-  var _possibleConstructorReturn2 = __webpack_require__(179);
+  var _possibleConstructorReturn2 = __webpack_require__(184);
 
   var _possibleConstructorReturn3 = _interopRequireDefault(_possibleConstructorReturn2);
 
-  var _inherits2 = __webpack_require__(180);
+  var _inherits2 = __webpack_require__(185);
 
   var _inherits3 = _interopRequireDefault(_inherits2);
 
-  var _NodeBase2 = __webpack_require__(185);
+  var _NodeBase2 = __webpack_require__(190);
 
   var _NodeBase3 = _interopRequireDefault(_NodeBase2);
 
@@ -39411,7 +40899,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports['default'] = Icon;
 
 /***/ }),
-/* 195 */
+/* 200 */
 /***/ (function(module, exports, __webpack_require__) {
 
   'use strict';
@@ -39420,7 +40908,7 @@ return /******/ (function(modules) { // webpackBootstrap
     value: true
   });
 
-  var _getPrototypeOf = __webpack_require__(176);
+  var _getPrototypeOf = __webpack_require__(181);
 
   var _getPrototypeOf2 = _interopRequireDefault(_getPrototypeOf);
 
@@ -39432,15 +40920,15 @@ return /******/ (function(modules) { // webpackBootstrap
 
   var _createClass3 = _interopRequireDefault(_createClass2);
 
-  var _possibleConstructorReturn2 = __webpack_require__(179);
+  var _possibleConstructorReturn2 = __webpack_require__(184);
 
   var _possibleConstructorReturn3 = _interopRequireDefault(_possibleConstructorReturn2);
 
-  var _inherits2 = __webpack_require__(180);
+  var _inherits2 = __webpack_require__(185);
 
   var _inherits3 = _interopRequireDefault(_inherits2);
 
-  var _CircleImageBase2 = __webpack_require__(187);
+  var _CircleImageBase2 = __webpack_require__(192);
 
   var _CircleImageBase3 = _interopRequireDefault(_CircleImageBase2);
 
@@ -39538,7 +41026,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports['default'] = Image;
 
 /***/ }),
-/* 196 */
+/* 201 */
 /***/ (function(module, exports, __webpack_require__) {
 
   'use strict';
@@ -39547,7 +41035,7 @@ return /******/ (function(modules) { // webpackBootstrap
     value: true
   });
 
-  var _getPrototypeOf = __webpack_require__(176);
+  var _getPrototypeOf = __webpack_require__(181);
 
   var _getPrototypeOf2 = _interopRequireDefault(_getPrototypeOf);
 
@@ -39559,15 +41047,15 @@ return /******/ (function(modules) { // webpackBootstrap
 
   var _createClass3 = _interopRequireDefault(_createClass2);
 
-  var _possibleConstructorReturn2 = __webpack_require__(179);
+  var _possibleConstructorReturn2 = __webpack_require__(184);
 
   var _possibleConstructorReturn3 = _interopRequireDefault(_possibleConstructorReturn2);
 
-  var _inherits2 = __webpack_require__(180);
+  var _inherits2 = __webpack_require__(185);
 
   var _inherits3 = _interopRequireDefault(_inherits2);
 
-  var _ShapeBase2 = __webpack_require__(191);
+  var _ShapeBase2 = __webpack_require__(196);
 
   var _ShapeBase3 = _interopRequireDefault(_ShapeBase2);
 
@@ -39598,7 +41086,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports['default'] = Square;
 
 /***/ }),
-/* 197 */
+/* 202 */
 /***/ (function(module, exports, __webpack_require__) {
 
   'use strict';
@@ -39607,7 +41095,7 @@ return /******/ (function(modules) { // webpackBootstrap
     value: true
   });
 
-  var _getPrototypeOf = __webpack_require__(176);
+  var _getPrototypeOf = __webpack_require__(181);
 
   var _getPrototypeOf2 = _interopRequireDefault(_getPrototypeOf);
 
@@ -39619,15 +41107,15 @@ return /******/ (function(modules) { // webpackBootstrap
 
   var _createClass3 = _interopRequireDefault(_createClass2);
 
-  var _possibleConstructorReturn2 = __webpack_require__(179);
+  var _possibleConstructorReturn2 = __webpack_require__(184);
 
   var _possibleConstructorReturn3 = _interopRequireDefault(_possibleConstructorReturn2);
 
-  var _inherits2 = __webpack_require__(180);
+  var _inherits2 = __webpack_require__(185);
 
   var _inherits3 = _interopRequireDefault(_inherits2);
 
-  var _ShapeBase2 = __webpack_require__(191);
+  var _ShapeBase2 = __webpack_require__(196);
 
   var _ShapeBase3 = _interopRequireDefault(_ShapeBase2);
 
@@ -39658,7 +41146,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports['default'] = Star;
 
 /***/ }),
-/* 198 */
+/* 203 */
 /***/ (function(module, exports, __webpack_require__) {
 
   'use strict';
@@ -39667,7 +41155,7 @@ return /******/ (function(modules) { // webpackBootstrap
     value: true
   });
 
-  var _getPrototypeOf = __webpack_require__(176);
+  var _getPrototypeOf = __webpack_require__(181);
 
   var _getPrototypeOf2 = _interopRequireDefault(_getPrototypeOf);
 
@@ -39679,15 +41167,15 @@ return /******/ (function(modules) { // webpackBootstrap
 
   var _createClass3 = _interopRequireDefault(_createClass2);
 
-  var _possibleConstructorReturn2 = __webpack_require__(179);
+  var _possibleConstructorReturn2 = __webpack_require__(184);
 
   var _possibleConstructorReturn3 = _interopRequireDefault(_possibleConstructorReturn2);
 
-  var _inherits2 = __webpack_require__(180);
+  var _inherits2 = __webpack_require__(185);
 
   var _inherits3 = _interopRequireDefault(_inherits2);
 
-  var _NodeBase2 = __webpack_require__(185);
+  var _NodeBase2 = __webpack_require__(190);
 
   var _NodeBase3 = _interopRequireDefault(_NodeBase2);
 
@@ -39743,7 +41231,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports['default'] = Text;
 
 /***/ }),
-/* 199 */
+/* 204 */
 /***/ (function(module, exports, __webpack_require__) {
 
   'use strict';
@@ -39752,7 +41240,7 @@ return /******/ (function(modules) { // webpackBootstrap
     value: true
   });
 
-  var _getPrototypeOf = __webpack_require__(176);
+  var _getPrototypeOf = __webpack_require__(181);
 
   var _getPrototypeOf2 = _interopRequireDefault(_getPrototypeOf);
 
@@ -39764,15 +41252,15 @@ return /******/ (function(modules) { // webpackBootstrap
 
   var _createClass3 = _interopRequireDefault(_createClass2);
 
-  var _possibleConstructorReturn2 = __webpack_require__(179);
+  var _possibleConstructorReturn2 = __webpack_require__(184);
 
   var _possibleConstructorReturn3 = _interopRequireDefault(_possibleConstructorReturn2);
 
-  var _inherits2 = __webpack_require__(180);
+  var _inherits2 = __webpack_require__(185);
 
   var _inherits3 = _interopRequireDefault(_inherits2);
 
-  var _ShapeBase2 = __webpack_require__(191);
+  var _ShapeBase2 = __webpack_require__(196);
 
   var _ShapeBase3 = _interopRequireDefault(_ShapeBase2);
 
@@ -39803,7 +41291,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports['default'] = Triangle;
 
 /***/ }),
-/* 200 */
+/* 205 */
 /***/ (function(module, exports, __webpack_require__) {
 
   'use strict';
@@ -39812,7 +41300,7 @@ return /******/ (function(modules) { // webpackBootstrap
     value: true
   });
 
-  var _getPrototypeOf = __webpack_require__(176);
+  var _getPrototypeOf = __webpack_require__(181);
 
   var _getPrototypeOf2 = _interopRequireDefault(_getPrototypeOf);
 
@@ -39824,15 +41312,15 @@ return /******/ (function(modules) { // webpackBootstrap
 
   var _createClass3 = _interopRequireDefault(_createClass2);
 
-  var _possibleConstructorReturn2 = __webpack_require__(179);
+  var _possibleConstructorReturn2 = __webpack_require__(184);
 
   var _possibleConstructorReturn3 = _interopRequireDefault(_possibleConstructorReturn2);
 
-  var _inherits2 = __webpack_require__(180);
+  var _inherits2 = __webpack_require__(185);
 
   var _inherits3 = _interopRequireDefault(_inherits2);
 
-  var _ShapeBase2 = __webpack_require__(191);
+  var _ShapeBase2 = __webpack_require__(196);
 
   var _ShapeBase3 = _interopRequireDefault(_ShapeBase2);
 
@@ -39863,7 +41351,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports['default'] = TriangleDown;
 
 /***/ }),
-/* 201 */
+/* 206 */
 /***/ (function(module, exports, __webpack_require__) {
 
   'use strict';
@@ -39886,9 +41374,9 @@ return /******/ (function(modules) { // webpackBootstrap
   var DataSet = __webpack_require__(89);
   var DataView = __webpack_require__(93);
 
-  var Edge = __webpack_require__(202)['default'];
-  var Label = __webpack_require__(170)['default'];
-  var LayoutEngine = __webpack_require__(210)['default']; // For access to LayoutEngine.getStaticType()
+  var Edge = __webpack_require__(207)['default'];
+  var Label = __webpack_require__(175)['default'];
+  var LayoutEngine = __webpack_require__(215)['default']; // For access to LayoutEngine.getStaticType()
 
   var EdgesHandler = function () {
     function EdgesHandler(body, images, groups) {
@@ -40326,7 +41814,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports['default'] = EdgesHandler;
 
 /***/ }),
-/* 202 */
+/* 207 */
 /***/ (function(module, exports, __webpack_require__) {
 
   'use strict';
@@ -40359,11 +41847,11 @@ return /******/ (function(modules) { // webpackBootstrap
 
   var util = __webpack_require__(1);
 
-  var Label = __webpack_require__(170)['default'];
-  var CubicBezierEdge = __webpack_require__(203)['default'];
-  var BezierEdgeDynamic = __webpack_require__(207)['default'];
-  var BezierEdgeStatic = __webpack_require__(208)['default'];
-  var StraightEdge = __webpack_require__(209)['default'];
+  var Label = __webpack_require__(175)['default'];
+  var CubicBezierEdge = __webpack_require__(208)['default'];
+  var BezierEdgeDynamic = __webpack_require__(212)['default'];
+  var BezierEdgeStatic = __webpack_require__(213)['default'];
+  var StraightEdge = __webpack_require__(214)['default'];
 
   /**
    * @class Edge
@@ -40999,6 +42487,12 @@ return /******/ (function(modules) { // webpackBootstrap
             if (newOptions.color.opacity !== undefined) {
               parentOptions.color.opacity = Math.min(1, Math.max(0, newOptions.color.opacity));
             }
+            if (newOptions.color.fromNode !== undefined) {
+              parentOptions.color.fromNode = newOptions.color.fromNode;colorsDefined = true;
+            }
+            if (newOptions.color.toNode !== undefined) {
+              parentOptions.color.toNode = newOptions.color.toNode;colorsDefined = true;
+            }
 
             if (newOptions.color.inherit === undefined && colorsDefined === true) {
               parentOptions.color.inherit = false;
@@ -41022,7 +42516,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports['default'] = Edge;
 
 /***/ }),
-/* 203 */
+/* 208 */
 /***/ (function(module, exports, __webpack_require__) {
 
   'use strict';
@@ -41031,11 +42525,11 @@ return /******/ (function(modules) { // webpackBootstrap
     value: true
   });
 
-  var _slicedToArray2 = __webpack_require__(171);
+  var _slicedToArray2 = __webpack_require__(176);
 
   var _slicedToArray3 = _interopRequireDefault(_slicedToArray2);
 
-  var _getPrototypeOf = __webpack_require__(176);
+  var _getPrototypeOf = __webpack_require__(181);
 
   var _getPrototypeOf2 = _interopRequireDefault(_getPrototypeOf);
 
@@ -41047,15 +42541,15 @@ return /******/ (function(modules) { // webpackBootstrap
 
   var _createClass3 = _interopRequireDefault(_createClass2);
 
-  var _possibleConstructorReturn2 = __webpack_require__(179);
+  var _possibleConstructorReturn2 = __webpack_require__(184);
 
   var _possibleConstructorReturn3 = _interopRequireDefault(_possibleConstructorReturn2);
 
-  var _inherits2 = __webpack_require__(180);
+  var _inherits2 = __webpack_require__(185);
 
   var _inherits3 = _interopRequireDefault(_inherits2);
 
-  var _CubicBezierEdgeBase2 = __webpack_require__(204);
+  var _CubicBezierEdgeBase2 = __webpack_require__(209);
 
   var _CubicBezierEdgeBase3 = _interopRequireDefault(_CubicBezierEdgeBase2);
 
@@ -41167,7 +42661,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports['default'] = CubicBezierEdge;
 
 /***/ }),
-/* 204 */
+/* 209 */
 /***/ (function(module, exports, __webpack_require__) {
 
   'use strict';
@@ -41176,7 +42670,7 @@ return /******/ (function(modules) { // webpackBootstrap
     value: true
   });
 
-  var _getPrototypeOf = __webpack_require__(176);
+  var _getPrototypeOf = __webpack_require__(181);
 
   var _getPrototypeOf2 = _interopRequireDefault(_getPrototypeOf);
 
@@ -41188,15 +42682,15 @@ return /******/ (function(modules) { // webpackBootstrap
 
   var _createClass3 = _interopRequireDefault(_createClass2);
 
-  var _possibleConstructorReturn2 = __webpack_require__(179);
+  var _possibleConstructorReturn2 = __webpack_require__(184);
 
   var _possibleConstructorReturn3 = _interopRequireDefault(_possibleConstructorReturn2);
 
-  var _inherits2 = __webpack_require__(180);
+  var _inherits2 = __webpack_require__(185);
 
   var _inherits3 = _interopRequireDefault(_inherits2);
 
-  var _BezierEdgeBase2 = __webpack_require__(205);
+  var _BezierEdgeBase2 = __webpack_require__(210);
 
   var _BezierEdgeBase3 = _interopRequireDefault(_BezierEdgeBase2);
 
@@ -41263,7 +42757,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports['default'] = CubicBezierEdgeBase;
 
 /***/ }),
-/* 205 */
+/* 210 */
 /***/ (function(module, exports, __webpack_require__) {
 
   'use strict';
@@ -41272,7 +42766,7 @@ return /******/ (function(modules) { // webpackBootstrap
     value: true
   });
 
-  var _getPrototypeOf = __webpack_require__(176);
+  var _getPrototypeOf = __webpack_require__(181);
 
   var _getPrototypeOf2 = _interopRequireDefault(_getPrototypeOf);
 
@@ -41284,17 +42778,21 @@ return /******/ (function(modules) { // webpackBootstrap
 
   var _createClass3 = _interopRequireDefault(_createClass2);
 
-  var _possibleConstructorReturn2 = __webpack_require__(179);
+  var _possibleConstructorReturn2 = __webpack_require__(184);
 
   var _possibleConstructorReturn3 = _interopRequireDefault(_possibleConstructorReturn2);
 
-  var _inherits2 = __webpack_require__(180);
+  var _inherits2 = __webpack_require__(185);
 
   var _inherits3 = _interopRequireDefault(_inherits2);
 
-  var _EdgeBase2 = __webpack_require__(206);
+  var _EdgeBase2 = __webpack_require__(211);
 
   var _EdgeBase3 = _interopRequireDefault(_EdgeBase2);
+
+  var _bezier = __webpack_require__(159);
+
+  var _bezier2 = _interopRequireDefault(_bezier);
 
   function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { 'default': obj }; }
 
@@ -41434,19 +42932,66 @@ return /******/ (function(modules) { // webpackBootstrap
         ctx.beginPath();
         ctx.moveTo(this.fromPoint.x, this.fromPoint.y);
 
-        if (hasNode1 && hasNode2) {
-          ctx.bezierCurveTo(viaNode1.x, viaNode1.y, viaNode2.x, viaNode2.y, this.toPoint.x, this.toPoint.y);
-        } else if (hasNode1) {
-          ctx.quadraticCurveTo(viaNode1.x, viaNode1.y, this.toPoint.x, this.toPoint.y);
+        var curve = void 0;
+
+        //Is multi color in options?
+        var colors = this.options.color;
+        if (colors.fromNode !== void 0 && colors.fromNode !== void 0) {
+          if (hasNode1 && hasNode2) {
+            curve = new _bezier2['default'](this.fromPoint, viaNode1, viaNode2, this.toPoint);
+          } else if (hasNode1) {
+            curve = new _bezier2['default'](this.fromPoint, viaNode1, this.toPoint);
+          } else {
+            throw "straight edge is not supported.";
+          }
+
+          var parts = curve.split(1 / 2);
+
+          if (colors.fromNode !== void 0 && colors.fromNode !== void 0) ctx.strokeStyle = colors.fromNode;
+          this._bezierCurvePart(ctx, parts.left.points, '#00ff00');
+
+          if (colors.toNode !== void 0 && colors.toNode !== void 0) ctx.strokeStyle = colors.toNode;
+          this._bezierCurvePart(ctx, parts.right.points, '#00ff00');
+          return; //No shadow support
         } else {
-          // fallback to normal straight edge
-          ctx.lineTo(this.toPoint.x, this.toPoint.y);
+          if (hasNode1 && hasNode2) {
+            ctx.bezierCurveTo(viaNode1.x, viaNode1.y, viaNode2.x, viaNode2.y, this.toPoint.x, this.toPoint.y);
+          } else if (hasNode1) {
+            ctx.quadraticCurveTo(viaNode1.x, viaNode1.y, this.toPoint.x, this.toPoint.y);
+          } else {
+            // fallback to normal straight edge
+            ctx.lineTo(this.toPoint.x, this.toPoint.y);
+          }
         }
 
         // draw shadow if enabled
         this.enableShadow(ctx, values);
         ctx.stroke();
         this.disableShadow(ctx, values);
+      }
+
+      /**
+       * 
+       * @param {CanvasRenderingContext2D} ctx 
+       * @param {Array} pointArray | Array of {x: <NUMBER>, y: <NUMBER>} objects. Min. 3 Max 4 Entries
+       */
+
+    }, {
+      key: '_bezierCurvePart',
+      value: function _bezierCurvePart(ctx, pointArray) {
+        var p = pointArray;
+
+        ctx.beginPath();
+        ctx.moveTo(p[0].x, p[0].y);
+
+        if (p.length === 3) {
+          ctx.quadraticCurveTo(p[1].x, p[1].y, p[2].x, p[2].y);
+        } else if (p.length === 4) {
+          ctx.bezierCurveTo(p[1].x, p[1].y, p[2].x, p[2].y, p[3].x, p[3].y);
+        }
+
+        ctx.stroke();
+        ctx.closePath();
       }
     }, {
       key: 'getViaNode',
@@ -41460,7 +43005,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports['default'] = BezierEdgeBase;
 
 /***/ }),
-/* 206 */
+/* 211 */
 /***/ (function(module, exports, __webpack_require__) {
 
   'use strict';
@@ -41469,7 +43014,7 @@ return /******/ (function(modules) { // webpackBootstrap
     value: true
   });
 
-  var _slicedToArray2 = __webpack_require__(171);
+  var _slicedToArray2 = __webpack_require__(176);
 
   var _slicedToArray3 = _interopRequireDefault(_slicedToArray2);
 
@@ -42039,7 +43584,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports['default'] = EdgeBase;
 
 /***/ }),
-/* 207 */
+/* 212 */
 /***/ (function(module, exports, __webpack_require__) {
 
   "use strict";
@@ -42048,11 +43593,11 @@ return /******/ (function(modules) { // webpackBootstrap
     value: true
   });
 
-  var _slicedToArray2 = __webpack_require__(171);
+  var _slicedToArray2 = __webpack_require__(176);
 
   var _slicedToArray3 = _interopRequireDefault(_slicedToArray2);
 
-  var _getPrototypeOf = __webpack_require__(176);
+  var _getPrototypeOf = __webpack_require__(181);
 
   var _getPrototypeOf2 = _interopRequireDefault(_getPrototypeOf);
 
@@ -42064,15 +43609,15 @@ return /******/ (function(modules) { // webpackBootstrap
 
   var _createClass3 = _interopRequireDefault(_createClass2);
 
-  var _possibleConstructorReturn2 = __webpack_require__(179);
+  var _possibleConstructorReturn2 = __webpack_require__(184);
 
   var _possibleConstructorReturn3 = _interopRequireDefault(_possibleConstructorReturn2);
 
-  var _inherits2 = __webpack_require__(180);
+  var _inherits2 = __webpack_require__(185);
 
   var _inherits3 = _interopRequireDefault(_inherits2);
 
-  var _BezierEdgeBase2 = __webpack_require__(205);
+  var _BezierEdgeBase2 = __webpack_require__(210);
 
   var _BezierEdgeBase3 = _interopRequireDefault(_BezierEdgeBase2);
 
@@ -42260,7 +43805,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports["default"] = BezierEdgeDynamic;
 
 /***/ }),
-/* 208 */
+/* 213 */
 /***/ (function(module, exports, __webpack_require__) {
 
   'use strict';
@@ -42269,7 +43814,7 @@ return /******/ (function(modules) { // webpackBootstrap
     value: true
   });
 
-  var _getPrototypeOf = __webpack_require__(176);
+  var _getPrototypeOf = __webpack_require__(181);
 
   var _getPrototypeOf2 = _interopRequireDefault(_getPrototypeOf);
 
@@ -42281,15 +43826,15 @@ return /******/ (function(modules) { // webpackBootstrap
 
   var _createClass3 = _interopRequireDefault(_createClass2);
 
-  var _possibleConstructorReturn2 = __webpack_require__(179);
+  var _possibleConstructorReturn2 = __webpack_require__(184);
 
   var _possibleConstructorReturn3 = _interopRequireDefault(_possibleConstructorReturn2);
 
-  var _inherits2 = __webpack_require__(180);
+  var _inherits2 = __webpack_require__(185);
 
   var _inherits3 = _interopRequireDefault(_inherits2);
 
-  var _BezierEdgeBase2 = __webpack_require__(205);
+  var _BezierEdgeBase2 = __webpack_require__(210);
 
   var _BezierEdgeBase3 = _interopRequireDefault(_BezierEdgeBase2);
 
@@ -42481,7 +44026,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports['default'] = BezierEdgeStatic;
 
 /***/ }),
-/* 209 */
+/* 214 */
 /***/ (function(module, exports, __webpack_require__) {
 
   'use strict';
@@ -42490,7 +44035,7 @@ return /******/ (function(modules) { // webpackBootstrap
     value: true
   });
 
-  var _getPrototypeOf = __webpack_require__(176);
+  var _getPrototypeOf = __webpack_require__(181);
 
   var _getPrototypeOf2 = _interopRequireDefault(_getPrototypeOf);
 
@@ -42502,15 +44047,15 @@ return /******/ (function(modules) { // webpackBootstrap
 
   var _createClass3 = _interopRequireDefault(_createClass2);
 
-  var _possibleConstructorReturn2 = __webpack_require__(179);
+  var _possibleConstructorReturn2 = __webpack_require__(184);
 
   var _possibleConstructorReturn3 = _interopRequireDefault(_possibleConstructorReturn2);
 
-  var _inherits2 = __webpack_require__(180);
+  var _inherits2 = __webpack_require__(185);
 
   var _inherits3 = _interopRequireDefault(_inherits2);
 
-  var _EdgeBase2 = __webpack_require__(206);
+  var _EdgeBase2 = __webpack_require__(211);
 
   var _EdgeBase3 = _interopRequireDefault(_EdgeBase2);
 
@@ -42601,7 +44146,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports['default'] = StraightEdge;
 
 /***/ }),
-/* 210 */
+/* 215 */
 /***/ (function(module, exports, __webpack_require__) {
 
   'use strict';
@@ -42614,7 +44159,7 @@ return /******/ (function(modules) { // webpackBootstrap
 
   var _keys2 = _interopRequireDefault(_keys);
 
-  var _slicedToArray2 = __webpack_require__(171);
+  var _slicedToArray2 = __webpack_require__(176);
 
   var _slicedToArray3 = _interopRequireDefault(_slicedToArray2);
 
@@ -42633,7 +44178,7 @@ return /******/ (function(modules) { // webpackBootstrap
   function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { 'default': obj }; }
 
   var util = __webpack_require__(1);
-  var NetworkUtil = __webpack_require__(211)['default'];
+  var NetworkUtil = __webpack_require__(216)['default'];
 
   /**
    * Container for derived data on current network, relating to hierarchy.
@@ -44372,7 +45917,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports['default'] = LayoutEngine;
 
 /***/ }),
-/* 211 */
+/* 216 */
 /***/ (function(module, exports, __webpack_require__) {
 
   "use strict";
@@ -44515,7 +46060,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports["default"] = NetworkUtil;
 
 /***/ }),
-/* 212 */
+/* 217 */
 /***/ (function(module, exports, __webpack_require__) {
 
   'use strict';
@@ -44538,14 +46083,14 @@ return /******/ (function(modules) { // webpackBootstrap
 
   function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { 'default': obj }; }
 
-  var BarnesHutSolver = __webpack_require__(213)['default'];
-  var Repulsion = __webpack_require__(214)['default'];
-  var HierarchicalRepulsion = __webpack_require__(215)['default'];
-  var SpringSolver = __webpack_require__(216)['default'];
-  var HierarchicalSpringSolver = __webpack_require__(217)['default'];
-  var CentralGravitySolver = __webpack_require__(218)['default'];
-  var ForceAtlas2BasedRepulsionSolver = __webpack_require__(219)['default'];
-  var ForceAtlas2BasedCentralGravitySolver = __webpack_require__(220)['default'];
+  var BarnesHutSolver = __webpack_require__(218)['default'];
+  var Repulsion = __webpack_require__(219)['default'];
+  var HierarchicalRepulsion = __webpack_require__(220)['default'];
+  var SpringSolver = __webpack_require__(221)['default'];
+  var HierarchicalSpringSolver = __webpack_require__(222)['default'];
+  var CentralGravitySolver = __webpack_require__(223)['default'];
+  var ForceAtlas2BasedRepulsionSolver = __webpack_require__(224)['default'];
+  var ForceAtlas2BasedCentralGravitySolver = __webpack_require__(225)['default'];
 
   var util = __webpack_require__(1);
 
@@ -45333,7 +46878,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports['default'] = PhysicsEngine;
 
 /***/ }),
-/* 213 */
+/* 218 */
 /***/ (function(module, exports, __webpack_require__) {
 
   "use strict";
@@ -45852,7 +47397,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports["default"] = BarnesHutSolver;
 
 /***/ }),
-/* 214 */
+/* 219 */
 /***/ (function(module, exports, __webpack_require__) {
 
   "use strict";
@@ -45951,7 +47496,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports["default"] = RepulsionSolver;
 
 /***/ }),
-/* 215 */
+/* 220 */
 /***/ (function(module, exports, __webpack_require__) {
 
   "use strict";
@@ -46047,7 +47592,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports["default"] = HierarchicalRepulsionSolver;
 
 /***/ }),
-/* 216 */
+/* 221 */
 /***/ (function(module, exports, __webpack_require__) {
 
   "use strict";
@@ -46163,7 +47708,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports["default"] = SpringSolver;
 
 /***/ }),
-/* 217 */
+/* 222 */
 /***/ (function(module, exports, __webpack_require__) {
 
   "use strict";
@@ -46297,7 +47842,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports["default"] = HierarchicalSpringSolver;
 
 /***/ }),
-/* 218 */
+/* 223 */
 /***/ (function(module, exports, __webpack_require__) {
 
   "use strict";
@@ -46371,7 +47916,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports["default"] = CentralGravitySolver;
 
 /***/ }),
-/* 219 */
+/* 224 */
 /***/ (function(module, exports, __webpack_require__) {
 
   "use strict";
@@ -46380,7 +47925,7 @@ return /******/ (function(modules) { // webpackBootstrap
     value: true
   });
 
-  var _getPrototypeOf = __webpack_require__(176);
+  var _getPrototypeOf = __webpack_require__(181);
 
   var _getPrototypeOf2 = _interopRequireDefault(_getPrototypeOf);
 
@@ -46392,15 +47937,15 @@ return /******/ (function(modules) { // webpackBootstrap
 
   var _createClass3 = _interopRequireDefault(_createClass2);
 
-  var _possibleConstructorReturn2 = __webpack_require__(179);
+  var _possibleConstructorReturn2 = __webpack_require__(184);
 
   var _possibleConstructorReturn3 = _interopRequireDefault(_possibleConstructorReturn2);
 
-  var _inherits2 = __webpack_require__(180);
+  var _inherits2 = __webpack_require__(185);
 
   var _inherits3 = _interopRequireDefault(_inherits2);
 
-  var _BarnesHutSolver2 = __webpack_require__(213);
+  var _BarnesHutSolver2 = __webpack_require__(218);
 
   var _BarnesHutSolver3 = _interopRequireDefault(_BarnesHutSolver2);
 
@@ -46455,7 +48000,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports["default"] = ForceAtlas2BasedRepulsionSolver;
 
 /***/ }),
-/* 220 */
+/* 225 */
 /***/ (function(module, exports, __webpack_require__) {
 
   "use strict";
@@ -46464,7 +48009,7 @@ return /******/ (function(modules) { // webpackBootstrap
     value: true
   });
 
-  var _getPrototypeOf = __webpack_require__(176);
+  var _getPrototypeOf = __webpack_require__(181);
 
   var _getPrototypeOf2 = _interopRequireDefault(_getPrototypeOf);
 
@@ -46476,15 +48021,15 @@ return /******/ (function(modules) { // webpackBootstrap
 
   var _createClass3 = _interopRequireDefault(_createClass2);
 
-  var _possibleConstructorReturn2 = __webpack_require__(179);
+  var _possibleConstructorReturn2 = __webpack_require__(184);
 
   var _possibleConstructorReturn3 = _interopRequireDefault(_possibleConstructorReturn2);
 
-  var _inherits2 = __webpack_require__(180);
+  var _inherits2 = __webpack_require__(185);
 
   var _inherits3 = _interopRequireDefault(_inherits2);
 
-  var _CentralGravitySolver2 = __webpack_require__(218);
+  var _CentralGravitySolver2 = __webpack_require__(223);
 
   var _CentralGravitySolver3 = _interopRequireDefault(_CentralGravitySolver2);
 
@@ -46521,7 +48066,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports["default"] = ForceAtlas2BasedCentralGravitySolver;
 
 /***/ }),
-/* 221 */
+/* 226 */
 /***/ (function(module, exports, __webpack_require__) {
 
   'use strict';
@@ -46549,8 +48094,8 @@ return /******/ (function(modules) { // webpackBootstrap
   function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { 'default': obj }; }
 
   var util = __webpack_require__(1);
-  var NetworkUtil = __webpack_require__(211)['default'];
-  var Cluster = __webpack_require__(222)['default'];
+  var NetworkUtil = __webpack_require__(216)['default'];
+  var Cluster = __webpack_require__(227)['default'];
 
   var ClusterEngine = function () {
     function ClusterEngine(body) {
@@ -47512,7 +49057,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports['default'] = ClusterEngine;
 
 /***/ }),
-/* 222 */
+/* 227 */
 /***/ (function(module, exports, __webpack_require__) {
 
   'use strict';
@@ -47521,7 +49066,7 @@ return /******/ (function(modules) { // webpackBootstrap
     value: true
   });
 
-  var _getPrototypeOf = __webpack_require__(176);
+  var _getPrototypeOf = __webpack_require__(181);
 
   var _getPrototypeOf2 = _interopRequireDefault(_getPrototypeOf);
 
@@ -47529,15 +49074,15 @@ return /******/ (function(modules) { // webpackBootstrap
 
   var _classCallCheck3 = _interopRequireDefault(_classCallCheck2);
 
-  var _possibleConstructorReturn2 = __webpack_require__(179);
+  var _possibleConstructorReturn2 = __webpack_require__(184);
 
   var _possibleConstructorReturn3 = _interopRequireDefault(_possibleConstructorReturn2);
 
-  var _inherits2 = __webpack_require__(180);
+  var _inherits2 = __webpack_require__(185);
 
   var _inherits3 = _interopRequireDefault(_inherits2);
 
-  var _Node2 = __webpack_require__(169);
+  var _Node2 = __webpack_require__(174);
 
   var _Node3 = _interopRequireDefault(_Node2);
 
@@ -47566,7 +49111,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports['default'] = Cluster;
 
 /***/ }),
-/* 223 */
+/* 228 */
 /***/ (function(module, exports, __webpack_require__) {
 
   'use strict';
@@ -47938,7 +49483,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports['default'] = CanvasRenderer;
 
 /***/ }),
-/* 224 */
+/* 229 */
 /***/ (function(module, exports, __webpack_require__) {
 
   'use strict';
@@ -48473,7 +50018,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports['default'] = Canvas;
 
 /***/ }),
-/* 225 */
+/* 230 */
 /***/ (function(module, exports, __webpack_require__) {
 
   'use strict';
@@ -48494,7 +50039,7 @@ return /******/ (function(modules) { // webpackBootstrap
 
   var util = __webpack_require__(1);
 
-  var NetworkUtil = __webpack_require__(211)['default'];
+  var NetworkUtil = __webpack_require__(216)['default'];
 
   var View = function () {
     function View(body, canvas) {
@@ -48824,7 +50369,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports['default'] = View;
 
 /***/ }),
-/* 226 */
+/* 231 */
 /***/ (function(module, exports, __webpack_require__) {
 
   'use strict';
@@ -48845,7 +50390,7 @@ return /******/ (function(modules) { // webpackBootstrap
 
   var util = __webpack_require__(1);
 
-  var NavigationHandler = __webpack_require__(227)['default'];
+  var NavigationHandler = __webpack_require__(232)['default'];
   var Popup = __webpack_require__(134)['default'];
 
   var InteractionHandler = function () {
@@ -49592,7 +51137,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports['default'] = InteractionHandler;
 
 /***/ }),
-/* 227 */
+/* 232 */
 /***/ (function(module, exports, __webpack_require__) {
 
   'use strict';
@@ -49942,7 +51487,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports['default'] = NavigationHandler;
 
 /***/ }),
-/* 228 */
+/* 233 */
 /***/ (function(module, exports, __webpack_require__) {
 
   'use strict';
@@ -49961,8 +51506,8 @@ return /******/ (function(modules) { // webpackBootstrap
 
   function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { 'default': obj }; }
 
-  var Node = __webpack_require__(169)['default'];
-  var Edge = __webpack_require__(202)['default'];
+  var Node = __webpack_require__(174)['default'];
+  var Edge = __webpack_require__(207)['default'];
 
   var util = __webpack_require__(1);
 
@@ -50750,7 +52295,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports['default'] = SelectionHandler;
 
 /***/ }),
-/* 229 */
+/* 234 */
 /***/ (function(module, exports, __webpack_require__) {
 
   'use strict';
@@ -52032,7 +53577,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports['default'] = ManipulationSystem;
 
 /***/ }),
-/* 230 */
+/* 235 */
 /***/ (function(module, exports) {
 
   'use strict';
@@ -52082,6 +53627,8 @@ return /******/ (function(modules) { // webpackBootstrap
         hover: { string: string },
         inherit: { string: ['from', 'to', 'both'], boolean: bool },
         opacity: { number: number },
+        fromNode: { String: String },
+        toNode: { String: String },
         __type__: { object: object, string: string }
       },
       dashes: { boolean: bool, array: array },
@@ -52527,7 +54074,9 @@ return /******/ (function(modules) { // webpackBootstrap
         highlight: ['color', '#848484'],
         hover: ['color', '#848484'],
         inherit: ['from', 'to', 'both', true, false],
-        opacity: [1, 0, 1, 0.05]
+        opacity: [1, 0, 1, 0.05],
+        fromNode: void 0,
+        toNode: void 0
       },
       dashes: false,
       font: {
@@ -52655,7 +54204,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports.configureOptions = configureOptions;
 
 /***/ }),
-/* 231 */
+/* 236 */
 /***/ (function(module, exports, __webpack_require__) {
 
   "use strict";
@@ -52664,7 +54213,7 @@ return /******/ (function(modules) { // webpackBootstrap
     value: true
   });
 
-  var _slicedToArray2 = __webpack_require__(171);
+  var _slicedToArray2 = __webpack_require__(176);
 
   var _slicedToArray3 = _interopRequireDefault(_slicedToArray2);
 
@@ -52676,7 +54225,7 @@ return /******/ (function(modules) { // webpackBootstrap
 
   var _createClass3 = _interopRequireDefault(_createClass2);
 
-  var _FloydWarshall = __webpack_require__(232);
+  var _FloydWarshall = __webpack_require__(237);
 
   var _FloydWarshall2 = _interopRequireDefault(_FloydWarshall);
 
@@ -53025,7 +54574,7 @@ return /******/ (function(modules) { // webpackBootstrap
   exports["default"] = KamadaKawai;
 
 /***/ }),
-/* 232 */
+/* 237 */
 /***/ (function(module, exports, __webpack_require__) {
 
   "use strict";
